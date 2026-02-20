@@ -1,0 +1,222 @@
+/* ========================================
+   Outreach Sidebar — injected into LinkedIn
+   ======================================== */
+
+#outreach-sidebar {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: 320px;
+  height: 100vh;
+  background: #ffffff;
+  border-left: 2px solid #e0e0e0;
+  box-shadow: -4px 0 20px rgba(0, 0, 0, 0.08);
+  z-index: 99999;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-size: 14px;
+  color: #1d1d1f;
+  overflow-y: auto;
+  transition: transform 0.3s ease;
+}
+
+#outreach-sidebar.collapsed {
+  transform: translateX(280px);
+}
+
+#outreach-sidebar.collapsed .outreach-sidebar-header {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+}
+
+/* Header */
+.outreach-sidebar-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 16px;
+  background: linear-gradient(135deg, #0a66c2, #004182);
+  color: white;
+  font-weight: 600;
+  font-size: 15px;
+}
+
+.outreach-logo {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+#outreach-toggle {
+  background: none;
+  border: none;
+  color: white;
+  cursor: pointer;
+  font-size: 16px;
+  padding: 4px 8px;
+  border-radius: 4px;
+}
+
+#outreach-toggle:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* Content */
+#outreach-content {
+  padding: 16px;
+}
+
+#outreach-loading {
+  text-align: center;
+  padding: 40px 0;
+  color: #666;
+}
+
+/* Sections */
+.outreach-section {
+  margin-bottom: 16px;
+}
+
+.outreach-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: #888;
+  margin-bottom: 4px;
+  font-weight: 600;
+}
+
+.outreach-value {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+/* Stage badges */
+.outreach-badge {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.stage-new { background: #f0f0f0; color: #555; }
+.stage-invited { background: #e3f2fd; color: #1565c0; }
+.stage-connected { background: #e8f5e9; color: #2e7d32; }
+.stage-messaged { background: #fff3e0; color: #e65100; }
+.stage-replied { background: #f3e5f5; color: #7b1fa2; }
+.stage-meeting { background: #fce4ec; color: #c62828; }
+
+/* Hint */
+.outreach-hint {
+  background: #fff8e1;
+  border: 1px solid #ffe082;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 16px;
+  font-size: 12px;
+  color: #f57f17;
+}
+
+/* Tasks */
+.outreach-tasks-list {
+  max-height: 200px;
+  overflow-y: auto;
+}
+
+.outreach-task {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 6px;
+  margin-bottom: 4px;
+  background: #f9f9f9;
+  font-size: 12px;
+}
+
+.outreach-task.overdue {
+  background: #fff3f0;
+  border-left: 3px solid #ff5722;
+}
+
+.outreach-task.done {
+  opacity: 0.5;
+}
+
+.task-type {
+  flex: 1;
+  font-weight: 500;
+}
+
+.task-due {
+  color: #888;
+  margin: 0 8px;
+}
+
+.outreach-no-tasks {
+  color: #aaa;
+  font-size: 12px;
+  text-align: center;
+  padding: 8px;
+}
+
+/* Action buttons */
+.outreach-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.outreach-btn {
+  padding: 10px 14px;
+  border: none;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  text-align: left;
+}
+
+.outreach-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
+.outreach-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.outreach-btn-invite { background: #e3f2fd; color: #1565c0; }
+.outreach-btn-connected { background: #e8f5e9; color: #2e7d32; }
+.outreach-btn-message { background: #fff3e0; color: #e65100; }
+.outreach-btn-reply { background: #f3e5f5; color: #7b1fa2; }
+.outreach-btn-meeting { background: #fce4ec; color: #c62828; }
+.outreach-btn-create { background: #0a66c2; color: white; text-align: center; }
+
+.outreach-btn-invite:hover { background: #bbdefb; }
+.outreach-btn-connected:hover { background: #c8e6c9; }
+.outreach-btn-message:hover { background: #ffe0b2; }
+.outreach-btn-reply:hover { background: #e1bee7; }
+.outreach-btn-meeting:hover { background: #f8bbd0; }
+.outreach-btn-create:hover { background: #0857a6; }
+
+/* Auth required */
+#outreach-auth-required p {
+  text-align: center;
+  color: #888;
+  padding: 30px 0;
+}
+
+#outreach-new-lead {
+  text-align: center;
+  padding: 20px 0;
+}
+
+#outreach-new-lead p {
+  color: #888;
+  margin-bottom: 12px;
+}
