@@ -40,7 +40,8 @@ CREATE TABLE leads (
     campaign_tag VARCHAR(255),
     stage lead_stage NOT NULL DEFAULT 'New',
     owner_employee_id UUID NOT NULL REFERENCES employees(id),
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX idx_leads_owner ON leads(owner_employee_id);

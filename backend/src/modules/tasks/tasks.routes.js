@@ -1,6 +1,6 @@
 const express = require('express');
 const db = require('../../config/db');
-const { authenticate } = require('../../middleware/auth');
+const { authenticate, authenticateOrApiKey } = require('../../middleware/auth');
 
 const router = express.Router();
 
@@ -8,7 +8,7 @@ const router = express.Router();
  * GET /api/tasks
  * Query: ?employee_id=&status=open|done&lead_id=&page=&limit=
  */
-router.get('/', async (req, res) => {
+router.get('/', authenticateOrApiKey, async (req, res) => {
   try {
     const { employee_id, status, lead_id, page = 1, limit = 50 } = req.query;
     const conditions = [];
@@ -31,18 +31,31 @@ router.get('/', async (req, res) => {
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
     const offset = (parseInt(page) - 1) * parseInt(limit);
 
+    const countResult = await db.query(
+      `SELECT COUNT(*) FROM tasks t ${where}`,
+      params
+    );
+
     const { rows } = await db.query(
-      `SELECT t.*, l.name AS lead_name, l.linkedin_url, e.name AS employee_name
+      `SELECT t.*, l.name AS lead_name, l.linkedin_url, l.company AS lead_company,
+              l.stage AS lead_stage, e.name AS employee_name
        FROM tasks t
        LEFT JOIN leads l ON l.id = t.lead_id
        LEFT JOIN employees e ON e.id = t.employee_id
        ${where}
-       ORDER BY t.due_at ASC
+       ORDER BY
+         CASE WHEN t.status = 'open' THEN 0 ELSE 1 END,
+         t.due_at ASC
        LIMIT $${idx++} OFFSET $${idx++}`,
       [...params, parseInt(limit), offset]
     );
 
-    res.json({ tasks: rows });
+    res.json({
+      tasks: rows,
+      total: parseInt(countResult.rows[0].count),
+      page: parseInt(page),
+      limit: parseInt(limit),
+    });
   } catch (err) {
     console.error('Get tasks error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -50,9 +63,77 @@ router.get('/', async (req, res) => {
 });
 
 /**
+ * GET /api/tasks/my
+ * Returns tasks for the current authenticated employee, grouped by urgency.
+ */
+router.get('/my', authenticate, async (req, res) => {
+  try {
+    const { rows } = await db.query(
+      `SELECT t.*, l.name AS lead_name, l.linkedin_url, l.company AS lead_company,
+              l.stage AS lead_stage
+       FROM tasks t
+       LEFT JOIN leads l ON l.id = t.lead_id
+       WHERE t.employee_id = $1
+       ORDER BY
+         CASE WHEN t.status = 'open' THEN 0 ELSE 1 END,
+         t.due_at ASC
+       LIMIT 100`,
+      [req.employee.id]
+    );
+
+    const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const startOfTomorrow = new Date(startOfToday.getTime() + 86400000);
+
+    const overdue = rows.filter(t => t.status === 'open' && new Date(t.due_at) < startOfToday);
+    const today = rows.filter(t => t.status === 'open' && new Date(t.due_at) >= startOfToday && new Date(t.due_at) < startOfTomorrow);
+    const upcoming = rows.filter(t => t.status === 'open' && new Date(t.due_at) >= startOfTomorrow);
+    const done = rows.filter(t => t.status === 'done');
+
+    res.json({
+      overdue,
+      today,
+      upcoming,
+      done: done.slice(0, 10),
+      counts: {
+        overdue: overdue.length,
+        today: today.length,
+        upcoming: upcoming.length,
+        done: done.length,
+        total: rows.length,
+      },
+    });
+  } catch (err) {
+    console.error('Get my tasks error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * GET /api/tasks/overdue
+ * MUST be defined BEFORE /:id to avoid Express matching "overdue" as an id.
+ */
+router.get('/overdue', authenticateOrApiKey, async (req, res) => {
+  try {
+    const { rows } = await db.query(
+      `SELECT t.*, l.name AS lead_name, l.linkedin_url, e.name AS employee_name
+       FROM tasks t
+       LEFT JOIN leads l ON l.id = t.lead_id
+       LEFT JOIN employees e ON e.id = t.employee_id
+       WHERE t.status = 'open' AND t.due_at < NOW()
+       ORDER BY t.due_at ASC`
+    );
+
+    res.json({ tasks: rows });
+  } catch (err) {
+    console.error('Get overdue tasks error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
  * POST /api/tasks
  * Body: { lead_id, type, due_at? }
- * Creates a custom task for a lead.
  */
 router.post('/', authenticate, async (req, res) => {
   try {
@@ -62,7 +143,6 @@ router.post('/', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'lead_id and type required' });
     }
 
-    // Default due date: 24 hours from now
     const dueDate = due_at ? new Date(due_at) : new Date(Date.now() + 24 * 60 * 60 * 1000);
 
     const { rows } = await db.query(
@@ -81,7 +161,7 @@ router.post('/', authenticate, async (req, res) => {
 
 /**
  * PATCH /api/tasks/:id
- * Body: { status: 'done' }
+ * Body: { status: 'done' | 'open' }
  */
 router.patch('/:id', authenticate, async (req, res) => {
   try {
@@ -119,27 +199,6 @@ router.delete('/:id', authenticate, async (req, res) => {
     res.json({ deleted: true });
   } catch (err) {
     console.error('Delete task error:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-/**
- * GET /api/tasks/overdue
- */
-router.get('/overdue', async (req, res) => {
-  try {
-    const { rows } = await db.query(
-      `SELECT t.*, l.name AS lead_name, e.name AS employee_name
-       FROM tasks t
-       LEFT JOIN leads l ON l.id = t.lead_id
-       LEFT JOIN employees e ON e.id = t.employee_id
-       WHERE t.status = 'open' AND t.due_at < NOW()
-       ORDER BY t.due_at ASC`
-    );
-
-    res.json({ tasks: rows });
-  } catch (err) {
-    console.error('Get overdue tasks error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

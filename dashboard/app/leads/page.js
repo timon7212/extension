@@ -2,131 +2,160 @@
 
 import { useState, useEffect, useCallback } from 'react';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
+const API_BASE = typeof window !== 'undefined'
+  ? (process.env.NEXT_PUBLIC_API_URL || '/api')
+  : 'http://localhost:3001/api';
 
-const STAGES = ['', 'New', 'Invited', 'Connected', 'Messaged', 'Replied', 'Meeting'];
+const API_KEY = 'outreach-internal-key';
 
-const STAGE_COLORS = {
+const STAGES = ['New', 'Invited', 'Connected', 'Messaged', 'Replied', 'Meeting'];
+
+const STAGE_STYLES = {
   New: 'bg-gray-100 text-gray-700',
-  Invited: 'bg-blue-100 text-blue-700',
-  Connected: 'bg-green-100 text-green-700',
-  Messaged: 'bg-orange-100 text-orange-700',
-  Replied: 'bg-purple-100 text-purple-700',
-  Meeting: 'bg-red-100 text-red-700',
+  Invited: 'bg-blue-50 text-blue-700',
+  Connected: 'bg-emerald-50 text-emerald-700',
+  Messaged: 'bg-orange-50 text-orange-700',
+  Replied: 'bg-purple-50 text-purple-700',
+  Meeting: 'bg-rose-50 text-rose-700',
 };
 
 export default function LeadsPage() {
   const [leads, setLeads] = useState([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
-  const [filters, setFilters] = useState({ stage: '', owner: '', campaign: '' });
+  const [search, setSearch] = useState('');
+  const [searchInput, setSearchInput] = useState('');
+  const [stageFilter, setStageFilter] = useState('');
   const [loading, setLoading] = useState(true);
 
   const fetchLeads = useCallback(async () => {
     setLoading(true);
     try {
-      const params = new URLSearchParams({ page, limit: 25 });
-      if (filters.stage) params.set('stage', filters.stage);
-      if (filters.owner) params.set('owner', filters.owner);
-      if (filters.campaign) params.set('campaign', filters.campaign);
+      const params = new URLSearchParams({ page, limit: 30 });
+      if (stageFilter) params.set('stage', stageFilter);
+      if (search) params.set('search', search);
 
-      const res = await fetch(`${API_BASE}/leads?${params}`);
+      const res = await fetch(`${API_BASE}/leads?${params}`, {
+        headers: { 'X-API-Key': API_KEY },
+      });
       const data = await res.json();
       setLeads(data.leads || []);
       setTotal(data.total || 0);
-    } catch {
-      console.error('Failed to fetch leads');
+    } catch (err) {
+      console.error('Failed to fetch leads:', err);
     } finally {
       setLoading(false);
     }
-  }, [page, filters]);
+  }, [page, stageFilter, search]);
 
-  useEffect(() => {
-    fetchLeads();
-  }, [fetchLeads]);
+  useEffect(() => { fetchLeads(); }, [fetchLeads]);
 
-  const totalPages = Math.ceil(total / 25);
+  const handleSearch = (e) => {
+    e.preventDefault();
+    setSearch(searchInput);
+    setPage(1);
+  };
+
+  const totalPages = Math.ceil(total / 30);
 
   return (
     <div>
-      <h1 className="text-2xl font-bold mb-6">🎯 Лиды</h1>
+      <div className="flex items-center justify-between mb-6">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Leads</h1>
+          <p className="text-sm text-gray-500 mt-0.5">{total} total leads in pipeline</p>
+        </div>
+      </div>
 
-      {/* Filters */}
-      <div className="flex flex-wrap gap-3 mb-6">
-        <select
-          value={filters.stage}
-          onChange={(e) => { setFilters((f) => ({ ...f, stage: e.target.value })); setPage(1); }}
-          className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
-        >
-          <option value="">Все стадии</option>
-          {STAGES.filter(Boolean).map((s) => (
-            <option key={s} value={s}>{s}</option>
+      {/* Filters bar */}
+      <div className="flex flex-wrap items-center gap-3 mb-4">
+        <form onSubmit={handleSearch} className="flex gap-2">
+          <input
+            type="text"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            placeholder="Search by name, company, title..."
+            className="w-72 px-3 py-2 text-sm border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+          />
+          <button type="submit" className="px-4 py-2 text-sm font-medium bg-slate-900 text-white rounded-lg hover:bg-slate-800 transition-colors">
+            Search
+          </button>
+        </form>
+
+        <div className="flex gap-1 ml-auto">
+          <button
+            onClick={() => { setStageFilter(''); setPage(1); }}
+            className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+              !stageFilter ? 'bg-slate-900 text-white' : 'bg-white border border-gray-300 text-gray-600 hover:bg-gray-50'
+            }`}
+          >
+            All
+          </button>
+          {STAGES.map((s) => (
+            <button
+              key={s}
+              onClick={() => { setStageFilter(s); setPage(1); }}
+              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${
+                stageFilter === s ? 'bg-slate-900 text-white' : 'bg-white border border-gray-300 text-gray-600 hover:bg-gray-50'
+              }`}
+            >
+              {s}
+            </button>
           ))}
-        </select>
-
-        <input
-          type="text"
-          placeholder="Фильтр по кампании..."
-          value={filters.campaign}
-          onChange={(e) => { setFilters((f) => ({ ...f, campaign: e.target.value })); setPage(1); }}
-          className="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-brand-500"
-        />
-
-        <span className="flex items-center text-sm text-gray-400">
-          Всего: {total}
-        </span>
+        </div>
       </div>
 
       {/* Table */}
       <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
         {loading ? (
-          <div className="p-8 text-center text-gray-400">Загрузка...</div>
+          <div className="p-12 text-center text-gray-400">
+            <div className="inline-block w-6 h-6 border-2 border-gray-200 border-t-blue-500 rounded-full animate-spin mb-2"></div>
+            <p>Loading...</p>
+          </div>
         ) : leads.length === 0 ? (
-          <div className="p-8 text-center text-gray-400">Лиды не найдены</div>
+          <div className="p-12 text-center text-gray-400">
+            <p className="text-3xl mb-2">🔍</p>
+            <p>No leads found</p>
+          </div>
         ) : (
           <table className="w-full text-sm">
             <thead>
-              <tr className="bg-gray-50 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                <th className="px-6 py-3">Имя</th>
-                <th className="px-6 py-3">Компания</th>
-                <th className="px-6 py-3">Должность</th>
-                <th className="px-6 py-3">Стадия</th>
-                <th className="px-6 py-3">Владелец</th>
-                <th className="px-6 py-3">Кампания</th>
-                <th className="px-6 py-3">Создан</th>
-                <th className="px-6 py-3">LinkedIn</th>
+              <tr className="bg-gray-50/80 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider border-b border-gray-200">
+                <th className="px-5 py-3">Name</th>
+                <th className="px-5 py-3">Company</th>
+                <th className="px-5 py-3">Title</th>
+                <th className="px-5 py-3">Stage</th>
+                <th className="px-5 py-3">Owner</th>
+                <th className="px-5 py-3">Created</th>
+                <th className="px-5 py-3 w-10"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
               {leads.map((lead) => (
-                <tr key={lead.id} className="hover:bg-gray-50 transition-colors">
-                  <td className="px-6 py-4 font-medium">{lead.name}</td>
-                  <td className="px-6 py-4 text-gray-600">{lead.company || '—'}</td>
-                  <td className="px-6 py-4 text-gray-600 max-w-[200px] truncate">{lead.title || '—'}</td>
-                  <td className="px-6 py-4">
-                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${STAGE_COLORS[lead.stage] || ''}`}>
+                <tr key={lead.id} className="hover:bg-blue-50/30 transition-colors group">
+                  <td className="px-5 py-3.5">
+                    <div className="font-semibold text-gray-900">{lead.name}</div>
+                    {lead.location && <div className="text-xs text-gray-400 mt-0.5">{lead.location}</div>}
+                  </td>
+                  <td className="px-5 py-3.5 text-gray-600">{lead.company || '—'}</td>
+                  <td className="px-5 py-3.5 text-gray-500 max-w-[200px] truncate">{lead.title || '—'}</td>
+                  <td className="px-5 py-3.5">
+                    <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold ${STAGE_STYLES[lead.stage] || ''}`}>
                       {lead.stage}
                     </span>
                   </td>
-                  <td className="px-6 py-4 text-gray-600">{lead.owner_name || '—'}</td>
-                  <td className="px-6 py-4">
-                    {lead.campaign_tag ? (
-                      <span className="inline-flex items-center px-2 py-0.5 rounded bg-gray-100 text-xs text-gray-600">
-                        {lead.campaign_tag}
-                      </span>
-                    ) : '—'}
+                  <td className="px-5 py-3.5 text-gray-500">{lead.owner_name || '—'}</td>
+                  <td className="px-5 py-3.5 text-gray-400 text-xs">
+                    {new Date(lead.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                   </td>
-                  <td className="px-6 py-4 text-gray-400 text-xs">
-                    {new Date(lead.created_at).toLocaleDateString('ru-RU')}
-                  </td>
-                  <td className="px-6 py-4">
+                  <td className="px-5 py-3.5">
                     <a
                       href={lead.linkedin_url}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="text-brand-500 hover:text-brand-600 text-xs"
+                      className="opacity-0 group-hover:opacity-100 text-blue-600 hover:text-blue-800 text-xs font-medium transition-opacity"
                     >
-                      Профиль ↗
+                      LinkedIn ↗
                     </a>
                   </td>
                 </tr>
@@ -138,24 +167,26 @@ export default function LeadsPage() {
 
       {/* Pagination */}
       {totalPages > 1 && (
-        <div className="flex items-center justify-center gap-2 mt-6">
-          <button
-            onClick={() => setPage((p) => Math.max(1, p - 1))}
-            disabled={page === 1}
-            className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg disabled:opacity-40 hover:bg-gray-50"
-          >
-            ← Назад
-          </button>
-          <span className="text-sm text-gray-500">
-            Стр. {page} из {totalPages}
-          </span>
-          <button
-            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-            disabled={page === totalPages}
-            className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg disabled:opacity-40 hover:bg-gray-50"
-          >
-            Вперёд →
-          </button>
+        <div className="flex items-center justify-between mt-4">
+          <p className="text-sm text-gray-500">
+            Page {page} of {totalPages} · Showing {leads.length} of {total}
+          </p>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={page === 1}
+              className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg disabled:opacity-30 hover:bg-gray-50 transition-colors"
+            >
+              ← Previous
+            </button>
+            <button
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={page === totalPages}
+              className="px-3 py-1.5 text-sm border border-gray-300 rounded-lg disabled:opacity-30 hover:bg-gray-50 transition-colors"
+            >
+              Next →
+            </button>
+          </div>
         </div>
       )}
     </div>

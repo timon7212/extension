@@ -1,12 +1,15 @@
-// Server-side (SSR in Docker): use internal Docker network URL
-// Client-side (browser): use relative /api which goes through Nginx
+// Server-side (SSR): use internal Docker URL + API key
+// Client-side (browser): use relative /api through Nginx
 const API_BASE =
   process.env.INTERNAL_API_URL ||          // server-side: http://backend:3001/api
-  process.env.NEXT_PUBLIC_API_URL ||       // client-side: /api
+  process.env.NEXT_PUBLIC_API_URL ||       // client-side override
   'http://localhost:3001/api';             // local dev fallback
 
+const INTERNAL_API_KEY = process.env.INTERNAL_API_KEY || 'outreach-internal-key';
+
 /**
- * Fetch wrapper for backend API.
+ * Fetch wrapper for backend API (server-side).
+ * Automatically includes internal API key for auth.
  */
 export async function apiFetch(path, options = {}) {
   const url = `${API_BASE}${path}`;
@@ -14,6 +17,7 @@ export async function apiFetch(path, options = {}) {
   const res = await fetch(url, {
     headers: {
       'Content-Type': 'application/json',
+      'X-API-Key': INTERNAL_API_KEY,
       ...options.headers,
     },
     cache: 'no-store',
@@ -27,3 +31,11 @@ export async function apiFetch(path, options = {}) {
 
   return res.json();
 }
+
+/**
+ * Client-side API base for use in 'use client' components.
+ */
+export const CLIENT_API_BASE =
+  process.env.NEXT_PUBLIC_API_URL || '/api';
+
+export const CLIENT_API_KEY = INTERNAL_API_KEY;

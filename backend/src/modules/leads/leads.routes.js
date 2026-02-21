@@ -1,16 +1,16 @@
 const express = require('express');
 const db = require('../../config/db');
-const { authenticate } = require('../../middleware/auth');
+const { authenticate, authenticateOrApiKey } = require('../../middleware/auth');
 
 const router = express.Router();
 
 /**
  * GET /api/leads
- * Query: ?stage=&owner=&campaign=&page=1&limit=50
+ * Query: ?stage=&owner=&campaign=&search=&page=1&limit=50
  */
-router.get('/', async (req, res) => {
+router.get('/', authenticateOrApiKey, async (req, res) => {
   try {
-    const { stage, owner, campaign, page = 1, limit = 50 } = req.query;
+    const { stage, owner, campaign, search, page = 1, limit = 50 } = req.query;
     const conditions = [];
     const params = [];
     let idx = 1;
@@ -26,6 +26,11 @@ router.get('/', async (req, res) => {
     if (campaign) {
       conditions.push(`l.campaign_tag = $${idx++}`);
       params.push(campaign);
+    }
+    if (search) {
+      conditions.push(`(l.name ILIKE $${idx} OR l.company ILIKE $${idx} OR l.title ILIKE $${idx})`);
+      params.push(`%${search}%`);
+      idx++;
     }
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
@@ -78,13 +83,23 @@ router.get('/by-url', authenticate, async (req, res) => {
       return res.json({ lead: null });
     }
 
-    // Also fetch open tasks
+    // Also fetch tasks
     const tasks = await db.query(
       `SELECT * FROM tasks WHERE lead_id = $1 ORDER BY due_at ASC`,
       [rows[0].id]
     );
 
-    res.json({ lead: rows[0], tasks: tasks.rows });
+    // Also fetch events (activity history)
+    const events = await db.query(
+      `SELECT ev.*, e.name AS employee_name
+       FROM events ev
+       LEFT JOIN employees e ON e.id = ev.employee_id
+       WHERE ev.lead_id = $1
+       ORDER BY ev.created_at DESC`,
+      [rows[0].id]
+    );
+
+    res.json({ lead: rows[0], tasks: tasks.rows, events: events.rows });
   } catch (err) {
     console.error('Get lead by url error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -188,6 +203,7 @@ router.patch('/:id', authenticate, async (req, res) => {
       return res.status(400).json({ error: 'No valid fields to update' });
     }
 
+    updates.push(`updated_at = NOW()`);
     params.push(id);
     const { rows } = await db.query(
       `UPDATE leads SET ${updates.join(', ')} WHERE id = $${idx} RETURNING *`,

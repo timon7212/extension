@@ -138,6 +138,15 @@
   // ───────────────────────────
   let currentLead = null;
   let currentTasks = [];
+  let currentEvents = [];
+
+  const EVENT_LABELS = {
+    invite_sent: { icon: '📩', label: 'Invite Sent' },
+    connected: { icon: '🤝', label: 'Connected' },
+    message_sent: { icon: '💬', label: 'Message Sent' },
+    reply_received: { icon: '📨', label: 'Reply Received' },
+    meeting_booked: { icon: '📅', label: 'Meeting Booked' },
+  };
 
   // ───────────────────────────
   // Date helpers
@@ -223,6 +232,12 @@
           <div class="section">
             <div class="section-title" style="margin-bottom:8px;">⚡ Stage Actions</div>
             <div id="actions-container"></div>
+          </div>
+
+          <!-- Activity History -->
+          <div class="section" id="activity-section" style="display:none;">
+            <div class="section-title" style="margin-bottom:8px;">📜 Activity Log</div>
+            <div id="activity-container"></div>
           </div>
         </div>
 
@@ -362,6 +377,7 @@
       if (result.lead) {
         currentLead = result.lead;
         currentTasks = result.tasks || [];
+        currentEvents = result.events || [];
 
         // ── AUTO-UPDATE: compare extracted data with stored data ──
         await autoUpdateLead(profile, result.lead);
@@ -379,6 +395,7 @@
       const createResult = await api('POST', '/leads', profile);
       currentLead = createResult.lead;
       currentTasks = [];
+      currentEvents = [];
       showToast('Lead auto-created ✓');
       renderLeadInfo();
 
@@ -389,6 +406,7 @@
           if (retry.lead) {
             currentLead = retry.lead;
             currentTasks = retry.tasks || [];
+            currentEvents = retry.events || [];
             renderLeadInfo();
             return;
           }
@@ -401,43 +419,48 @@
 
   /**
    * Auto-update: If the page shows different data than what's stored,
-   * update the lead record. This is the "double-check" mechanism —
-   * every profile visit keeps data fresh.
+   * update the lead record. Includes sanity checks to avoid overwriting
+   * good data with bad extraction results.
    */
   async function autoUpdateLead(extracted, stored) {
     const changes = {};
-    let hasChanges = false;
 
-    // Only update non-empty extracted values that differ from stored
-    if (extracted.name && extracted.name !== stored.name) {
+    // Sanity check: extracted value must be reasonable (not junk)
+    function isValid(val, field) {
+      if (!val || val.length < 2) return false;
+      if (val.length > 200) return false;
+      // Reject common extraction garbage
+      const junk = /^(follow|message|connect|pending|subscribe|more|report|block|loading|see more|view|null|undefined)$/i;
+      if (junk.test(val)) return false;
+      // Name should have at least one space (first + last name)
+      if (field === 'name' && !val.includes(' ') && val.length < 3) return false;
+      return true;
+    }
+
+    if (isValid(extracted.name, 'name') && extracted.name !== stored.name) {
       changes.name = extracted.name;
-      hasChanges = true;
     }
-    if (extracted.title && extracted.title !== stored.title) {
+    if (isValid(extracted.title, 'title') && extracted.title !== stored.title) {
       changes.title = extracted.title;
-      hasChanges = true;
     }
-    if (extracted.company && extracted.company !== stored.company) {
+    if (isValid(extracted.company, 'company') && extracted.company !== stored.company) {
       changes.company = extracted.company;
-      hasChanges = true;
     }
-    if (extracted.location && extracted.location !== stored.location) {
+    if (isValid(extracted.location, 'location') && extracted.location !== stored.location) {
       changes.location = extracted.location;
-      hasChanges = true;
     }
 
-    if (hasChanges) {
+    if (Object.keys(changes).length > 0) {
       try {
         const result = await api('PATCH', `/leads/${stored.id}`, changes);
         if (result.lead) {
           currentLead = result.lead;
-          // Show subtle "updated" badge
           const badge = document.getElementById('lead-updated-badge');
           if (badge) {
             badge.style.display = 'block';
             setTimeout(() => { badge.style.display = 'none'; }, 4000);
           }
-          console.log('[Outreach] Auto-updated lead:', Object.keys(changes).join(', '));
+          console.log('[Outreach] Auto-updated:', Object.keys(changes).join(', '));
         }
       } catch (err) {
         console.warn('[Outreach] Auto-update failed:', err.message);
@@ -458,6 +481,7 @@
     renderPipeline();
     renderTasks();
     renderActions();
+    renderActivity();
   }
 
   // ───────────────────────────
@@ -644,6 +668,52 @@
         }
       });
     });
+  }
+
+  // ───────────────────────────
+  // Render: Activity Log
+  // ───────────────────────────
+  function renderActivity() {
+    const section = document.getElementById('activity-section');
+    const container = document.getElementById('activity-container');
+
+    if (!currentEvents || currentEvents.length === 0) {
+      section.style.display = 'none';
+      return;
+    }
+
+    section.style.display = 'block';
+
+    // Sort newest first
+    const sorted = [...currentEvents].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+    container.innerHTML = sorted.map(ev => {
+      const info = EVENT_LABELS[ev.type] || { icon: '📌', label: ev.type };
+      const date = new Date(ev.created_at);
+      const timeAgo = getTimeAgo(date);
+      return `
+        <div class="activity-item">
+          <span class="activity-icon">${info.icon}</span>
+          <div class="activity-details">
+            <span class="activity-label">${info.label}</span>
+            <span class="activity-time" title="${date.toLocaleString()}">${timeAgo}</span>
+          </div>
+        </div>`;
+    }).join('');
+  }
+
+  function getTimeAgo(date) {
+    const now = new Date();
+    const diffMs = now - date;
+    const diffMin = Math.floor(diffMs / 60000);
+    const diffHr = Math.floor(diffMs / 3600000);
+    const diffDay = Math.floor(diffMs / 86400000);
+
+    if (diffMin < 1) return 'Just now';
+    if (diffMin < 60) return `${diffMin}m ago`;
+    if (diffHr < 24) return `${diffHr}h ago`;
+    if (diffDay < 7) return `${diffDay}d ago`;
+    return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   }
 
   // ───────────────────────────

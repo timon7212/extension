@@ -1,6 +1,6 @@
 const express = require('express');
 const db = require('../../config/db');
-const { authenticate, requireAdmin } = require('../../middleware/auth');
+const { authenticate, authenticateOrApiKey } = require('../../middleware/auth');
 
 const router = express.Router();
 
@@ -8,7 +8,7 @@ const router = express.Router();
  * GET /api/analytics/overview
  * Returns high-level pipeline metrics.
  */
-router.get('/overview', async (req, res) => {
+router.get('/overview', authenticateOrApiKey, async (req, res) => {
   try {
     // Stage counts
     const stageResult = await db.query(
@@ -24,12 +24,12 @@ router.get('/overview', async (req, res) => {
     const events = {};
     eventResult.rows.forEach((r) => (events[r.type] = r.count));
 
-    // Acceptance rate = connected / invite_sent
+    // Acceptance rate
     const invites = events['invite_sent'] || 0;
     const connected = events['connected'] || 0;
     const acceptanceRate = invites > 0 ? ((connected / invites) * 100).toFixed(1) : 0;
 
-    // Reply rate = reply_received / message_sent
+    // Reply rate
     const messages = events['message_sent'] || 0;
     const replies = events['reply_received'] || 0;
     const replyRate = messages > 0 ? ((replies / messages) * 100).toFixed(1) : 0;
@@ -44,6 +44,15 @@ router.get('/overview', async (req, res) => {
       `SELECT COUNT(*)::int AS count FROM tasks WHERE status = 'open' AND due_at < NOW()`
     );
 
+    // Activity last 7 days
+    const activityResult = await db.query(
+      `SELECT DATE(created_at) AS date, COUNT(*)::int AS count
+       FROM events
+       WHERE created_at >= NOW() - INTERVAL '7 days'
+       GROUP BY DATE(created_at)
+       ORDER BY date`
+    );
+
     res.json({
       totalLeads: totalResult.rows[0].count,
       stages,
@@ -52,6 +61,7 @@ router.get('/overview', async (req, res) => {
       replyRate: parseFloat(replyRate),
       meetings,
       overdueTasks: overdueResult.rows[0].count,
+      recentActivity: activityResult.rows,
     });
   } catch (err) {
     console.error('Analytics overview error:', err);
@@ -63,26 +73,29 @@ router.get('/overview', async (req, res) => {
  * GET /api/analytics/employees
  * Returns per-employee funnel and activity.
  */
-router.get('/employees', async (req, res) => {
+router.get('/employees', authenticateOrApiKey, async (req, res) => {
   try {
     const { rows } = await db.query(`
       SELECT
         emp.id,
         emp.name,
+        emp.email,
         COUNT(DISTINCT l.id)::int AS total_leads,
+        COUNT(DISTINCT CASE WHEN l.stage = 'New' THEN l.id END)::int AS new,
         COUNT(DISTINCT CASE WHEN l.stage = 'Invited' THEN l.id END)::int AS invited,
         COUNT(DISTINCT CASE WHEN l.stage = 'Connected' THEN l.id END)::int AS connected,
         COUNT(DISTINCT CASE WHEN l.stage = 'Messaged' THEN l.id END)::int AS messaged,
         COUNT(DISTINCT CASE WHEN l.stage = 'Replied' THEN l.id END)::int AS replied,
         COUNT(DISTINCT CASE WHEN l.stage = 'Meeting' THEN l.id END)::int AS meeting,
         COUNT(DISTINCT ev.id)::int AS total_events,
-        COUNT(DISTINCT CASE WHEN t.status = 'open' AND t.due_at < NOW() THEN t.id END)::int AS overdue_tasks
+        COUNT(DISTINCT CASE WHEN t.status = 'open' AND t.due_at < NOW() THEN t.id END)::int AS overdue_tasks,
+        COUNT(DISTINCT CASE WHEN t.status = 'open' THEN t.id END)::int AS open_tasks
       FROM employees emp
       LEFT JOIN leads l ON l.owner_employee_id = emp.id
       LEFT JOIN events ev ON ev.employee_id = emp.id
       LEFT JOIN tasks t ON t.employee_id = emp.id
       WHERE emp.is_active = TRUE
-      GROUP BY emp.id, emp.name
+      GROUP BY emp.id, emp.name, emp.email
       ORDER BY emp.name
     `);
 
@@ -95,11 +108,16 @@ router.get('/employees', async (req, res) => {
 
 /**
  * GET /api/analytics/employee/:id
- * Returns detailed metrics for one employee.
  */
-router.get('/employee/:id', async (req, res) => {
+router.get('/employee/:id', authenticateOrApiKey, async (req, res) => {
   try {
     const { id } = req.params;
+
+    // Employee info
+    const empResult = await db.query(
+      'SELECT id, name, email, role, created_at FROM employees WHERE id = $1',
+      [id]
+    );
 
     // Funnel
     const funnelResult = await db.query(
@@ -119,17 +137,31 @@ router.get('/employee/:id', async (req, res) => {
       [id]
     );
 
-    // Overdue tasks
-    const overdueResult = await db.query(
-      `SELECT t.*, l.name AS lead_name
-       FROM tasks t
-       LEFT JOIN leads l ON l.id = t.lead_id
-       WHERE t.employee_id = $1 AND t.status = 'open' AND t.due_at < NOW()
-       ORDER BY t.due_at ASC`,
+    // Recent events
+    const recentEventsResult = await db.query(
+      `SELECT e.*, l.name AS lead_name, l.linkedin_url
+       FROM events e
+       LEFT JOIN leads l ON l.id = e.lead_id
+       WHERE e.employee_id = $1
+       ORDER BY e.created_at DESC
+       LIMIT 20`,
       [id]
     );
 
-    // Avg reply speed (time between message_sent and reply_received per lead)
+    // Tasks
+    const tasksResult = await db.query(
+      `SELECT t.*, l.name AS lead_name, l.linkedin_url
+       FROM tasks t
+       LEFT JOIN leads l ON l.id = t.lead_id
+       WHERE t.employee_id = $1
+       ORDER BY
+         CASE WHEN t.status = 'open' THEN 0 ELSE 1 END,
+         t.due_at ASC
+       LIMIT 50`,
+      [id]
+    );
+
+    // Avg reply speed
     const replySpeedResult = await db.query(
       `SELECT AVG(reply_time) AS avg_reply_hours FROM (
          SELECT
@@ -147,15 +179,41 @@ router.get('/employee/:id', async (req, res) => {
     );
 
     res.json({
+      employee: empResult.rows[0] || null,
       funnel: funnelResult.rows,
       activityPerDay: activityResult.rows,
-      overdueTasks: overdueResult.rows,
+      recentEvents: recentEventsResult.rows,
+      tasks: tasksResult.rows,
       avgReplyHours: replySpeedResult.rows[0]?.avg_reply_hours
         ? parseFloat(parseFloat(replySpeedResult.rows[0].avg_reply_hours).toFixed(1))
         : null,
     });
   } catch (err) {
     console.error('Analytics employee detail error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * GET /api/analytics/activity-feed
+ * Returns recent activity across all employees.
+ */
+router.get('/activity-feed', authenticateOrApiKey, async (req, res) => {
+  try {
+    const { limit = 30 } = req.query;
+    const { rows } = await db.query(
+      `SELECT e.*, l.name AS lead_name, l.linkedin_url, emp.name AS employee_name
+       FROM events e
+       LEFT JOIN leads l ON l.id = e.lead_id
+       LEFT JOIN employees emp ON emp.id = e.employee_id
+       ORDER BY e.created_at DESC
+       LIMIT $1`,
+      [parseInt(limit)]
+    );
+
+    res.json({ events: rows });
+  } catch (err) {
+    console.error('Activity feed error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

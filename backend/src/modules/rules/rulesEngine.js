@@ -3,16 +3,18 @@ const db = require('../../config/db');
 /**
  * Rules Engine
  * Processes events and:
- *   1. Updates lead stage
+ *   1. Updates lead stage (ONLY FORWARD, never backwards)
  *   2. Creates follow-up tasks
  */
+
+const STAGE_ORDER = ['New', 'Invited', 'Connected', 'Messaged', 'Replied', 'Meeting'];
 
 const RULES = {
   invite_sent: {
     newStage: 'Invited',
     task: {
       type: 'Follow up on invite',
-      dueInHours: 72, // 3 days
+      dueInHours: 72,
     },
   },
   connected: {
@@ -26,7 +28,7 @@ const RULES = {
     newStage: 'Messaged',
     task: {
       type: 'Check for reply',
-      dueInHours: 48, // 2 days
+      dueInHours: 48,
     },
   },
   reply_received: {
@@ -42,7 +44,7 @@ const RULES = {
 /**
  * Process an event through the rules engine.
  * @param {object} event - { id, lead_id, employee_id, type }
- * @returns {object} - { stage, task }
+ * @returns {object} - { stage, task, stageChanged }
  */
 async function processEvent(event) {
   const rule = RULES[event.type];
@@ -50,11 +52,30 @@ async function processEvent(event) {
     throw new Error(`No rule defined for event type: ${event.type}`);
   }
 
-  // 1. Update lead stage
-  await db.query(
-    'UPDATE leads SET stage = $1 WHERE id = $2',
-    [rule.newStage, event.lead_id]
+  // 1. Get current stage
+  const { rows: leadRows } = await db.query(
+    'SELECT stage FROM leads WHERE id = $1',
+    [event.lead_id]
   );
+
+  if (leadRows.length === 0) {
+    throw new Error('Lead not found');
+  }
+
+  const currentStage = leadRows[0].stage;
+  const currentIdx = STAGE_ORDER.indexOf(currentStage);
+  const newIdx = STAGE_ORDER.indexOf(rule.newStage);
+
+  let stageChanged = false;
+
+  // Only advance stage, NEVER go backwards
+  if (newIdx > currentIdx) {
+    await db.query(
+      'UPDATE leads SET stage = $1 WHERE id = $2',
+      [rule.newStage, event.lead_id]
+    );
+    stageChanged = true;
+  }
 
   let createdTask = null;
 
@@ -73,9 +94,10 @@ async function processEvent(event) {
   }
 
   return {
-    stage: rule.newStage,
+    stage: stageChanged ? rule.newStage : currentStage,
+    stageChanged,
     task: createdTask,
   };
 }
 
-module.exports = { processEvent, RULES };
+module.exports = { processEvent, RULES, STAGE_ORDER };

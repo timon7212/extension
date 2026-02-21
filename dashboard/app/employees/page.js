@@ -16,84 +16,74 @@ export default async function EmployeesPage() {
 
   if (!data) {
     return (
-      <div className="text-center py-20">
-        <p className="text-gray-400 text-lg">⚠️ Не удалось загрузить данные</p>
+      <div className="flex items-center justify-center min-h-[60vh]">
+        <div className="text-center">
+          <p className="text-5xl mb-4">⚠️</p>
+          <p className="text-gray-500 text-lg font-medium">Cannot load team data</p>
+        </div>
       </div>
     );
   }
 
   return (
     <div>
-      <h1 className="text-2xl font-bold mb-6">👥 Сотрудники</h1>
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold text-gray-900">Team</h1>
+        <p className="text-sm text-gray-500 mt-0.5">{data.employees.length} active members</p>
+      </div>
 
-      <div className="bg-white rounded-xl border border-gray-200 overflow-hidden">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="bg-gray-50 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
-              <th className="px-6 py-3">Имя</th>
-              <th className="px-6 py-3">Лидов</th>
-              <th className="px-6 py-3">Invited</th>
-              <th className="px-6 py-3">Connected</th>
-              <th className="px-6 py-3">Messaged</th>
-              <th className="px-6 py-3">Replied</th>
-              <th className="px-6 py-3">Meeting</th>
-              <th className="px-6 py-3">Событий</th>
-              <th className="px-6 py-3">Просрочено</th>
-              <th className="px-6 py-3"></th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100">
-            {data.employees.map((emp) => (
-              <tr key={emp.id} className="hover:bg-gray-50 transition-colors">
-                <td className="px-6 py-4 font-medium">{emp.name}</td>
-                <td className="px-6 py-4">{emp.total_leads}</td>
-                <td className="px-6 py-4">
-                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-blue-100 text-blue-700">
-                    {emp.invited}
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+        {data.employees.map((emp) => {
+          const convRate = emp.invited > 0 ? ((emp.connected / emp.invited) * 100).toFixed(0) : 0;
+          return (
+            <Link key={emp.id} href={`/employees/${emp.id}`}
+              className="bg-white rounded-xl border border-gray-200 p-5 hover:border-blue-300 hover:shadow-md transition-all group">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-600 to-blue-800 text-white flex items-center justify-center font-bold text-sm">
+                  {emp.name.charAt(0).toUpperCase()}
+                </div>
+                <div>
+                  <div className="font-semibold text-gray-900 group-hover:text-blue-600 transition-colors">{emp.name}</div>
+                  <div className="text-xs text-gray-400">{emp.email}</div>
+                </div>
+              </div>
+
+              {/* Stats grid */}
+              <div className="grid grid-cols-4 gap-2 text-center mb-3">
+                <div>
+                  <p className="text-lg font-bold text-gray-900">{emp.total_leads}</p>
+                  <p className="text-[10px] text-gray-400 uppercase">Leads</p>
+                </div>
+                <div>
+                  <p className="text-lg font-bold text-emerald-600">{emp.connected}</p>
+                  <p className="text-[10px] text-gray-400 uppercase">Connected</p>
+                </div>
+                <div>
+                  <p className="text-lg font-bold text-purple-600">{emp.replied}</p>
+                  <p className="text-[10px] text-gray-400 uppercase">Replied</p>
+                </div>
+                <div>
+                  <p className="text-lg font-bold text-rose-600">{emp.meeting}</p>
+                  <p className="text-[10px] text-gray-400 uppercase">Meetings</p>
+                </div>
+              </div>
+
+              {/* Bottom row */}
+              <div className="flex items-center justify-between pt-3 border-t border-gray-100 text-xs">
+                <div className="text-gray-500">
+                  {convRate}% acceptance · {emp.total_events} events
+                </div>
+                {emp.overdue_tasks > 0 ? (
+                  <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-red-100 text-red-700 font-semibold">
+                    ⚠️ {emp.overdue_tasks} overdue
                   </span>
-                </td>
-                <td className="px-6 py-4">
-                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700">
-                    {emp.connected}
-                  </span>
-                </td>
-                <td className="px-6 py-4">
-                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-orange-100 text-orange-700">
-                    {emp.messaged}
-                  </span>
-                </td>
-                <td className="px-6 py-4">
-                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-purple-100 text-purple-700">
-                    {emp.replied}
-                  </span>
-                </td>
-                <td className="px-6 py-4">
-                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700">
-                    {emp.meeting}
-                  </span>
-                </td>
-                <td className="px-6 py-4">{emp.total_events}</td>
-                <td className="px-6 py-4">
-                  {emp.overdue_tasks > 0 ? (
-                    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-700">
-                      ⚠️ {emp.overdue_tasks}
-                    </span>
-                  ) : (
-                    <span className="text-green-500 text-xs">✅ 0</span>
-                  )}
-                </td>
-                <td className="px-6 py-4">
-                  <Link
-                    href={`/employees/${emp.id}`}
-                    className="text-brand-500 hover:text-brand-600 text-xs font-semibold"
-                  >
-                    Подробнее →
-                  </Link>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+                ) : (
+                  <span className="text-emerald-500 font-medium">✓ On track</span>
+                )}
+              </div>
+            </Link>
+          );
+        })}
       </div>
     </div>
   );
