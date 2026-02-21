@@ -109,6 +109,21 @@ router.patch('/:id', authenticate, async (req, res) => {
 });
 
 /**
+ * DELETE /api/tasks/:id
+ */
+router.delete('/:id', authenticate, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { rows } = await db.query('DELETE FROM tasks WHERE id = $1 RETURNING id', [id]);
+    if (rows.length === 0) return res.status(404).json({ error: 'Task not found' });
+    res.json({ deleted: true });
+  } catch (err) {
+    console.error('Delete task error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
  * GET /api/tasks/overdue
  */
 router.get('/overdue', async (req, res) => {

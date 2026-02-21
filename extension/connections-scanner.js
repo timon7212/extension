@@ -1,16 +1,18 @@
 /**
- * Connections Scanner — injected on the LinkedIn Connections page.
+ * Connections Scanner — injected on LinkedIn Connections / My Network pages.
  *
- * Onboarding flow:
- *   1. Employee opens their LinkedIn Connections page
- *   2. A panel appears with a "Start Scan" button
- *   3. The scanner auto-scrolls through all connections
- *   4. Extracts name + profile URL + headline for each connection
- *   5. Sends them in batches to POST /api/leads/bulk
- *   6. All imported leads get stage = "Connected"
+ * CPO/CTO Flow:
+ *   1. Employee opens Connections page
+ *   2. Panel appears → "Start Scan"
+ *   3. Auto-scrolls, extracts each connection card separately
+ *   4. Sends batches to POST /api/leads/bulk (UPSERT — updates on re-scan)
+ *   5. Stage = "Connected" for new leads
  *
- * Designed to be stable: handles infinite scroll, deduplication,
- * rate limiting, and graceful error recovery.
+ * Parsing strategy (robust against LinkedIn DOM changes):
+ *   - Each connection card is an <li> in the list
+ *   - Name: span[aria-hidden="true"] inside profile link, OR dedicated name element
+ *   - Title: separate element with "occupation" or similar class
+ *   - NEVER use link.textContent as fallback (causes name+title concatenation)
  */
 
 (function () {
@@ -21,13 +23,13 @@
   // ───────────────────────────
   // Config
   // ───────────────────────────
-  const SCROLL_DELAY = 1200;        // ms between scrolls
-  const BATCH_SIZE = 50;            // leads per batch upload
-  const MAX_NO_NEW_ROUNDS = 5;      // stop after N scroll rounds with no new connections
-  const SCROLL_AMOUNT = 800;        // pixels per scroll
+  const SCROLL_DELAY = 1200;
+  const BATCH_SIZE = 50;
+  const MAX_NO_NEW_ROUNDS = 6;
+  const SCROLL_AMOUNT = 900;
 
   // ───────────────────────────
-  // API helpers (via background service worker)
+  // API
   // ───────────────────────────
   function api(method, path, body) {
     return new Promise((resolve, reject) => {
@@ -55,12 +57,221 @@
   // ───────────────────────────
   let isScanning = false;
   let shouldStop = false;
-  let collectedLeads = new Map();  // linkedin_url → lead data
-  let totalUploaded = 0;
+  let collectedLeads = new Map();
+  let totalCreated = 0;
+  let totalUpdated = 0;
   let totalSkipped = 0;
 
   // ───────────────────────────
-  // Create Panel UI
+  // NAME EXTRACTION — the critical fix
+  // ───────────────────────────
+
+  /**
+   * Get only the direct text content of an element, ignoring child elements.
+   * This prevents grabbing "NameOccupation" from nested spans.
+   */
+  function getDirectTextOnly(element) {
+    let text = '';
+    for (const node of element.childNodes) {
+      if (node.nodeType === Node.TEXT_NODE) {
+        text += node.textContent;
+      }
+    }
+    return text.trim();
+  }
+
+  /**
+   * Attempt to find the name element within a profile link or card.
+   * Returns { name, nameElement } or null.
+   */
+  function extractNameFromCard(link, card) {
+    // Strategy 1: span[aria-hidden="true"] inside the link
+    // LinkedIn uses this for accessibility — it contains ONLY the name
+    const ariaSpan = link.querySelector('span[aria-hidden="true"]');
+    if (ariaSpan) {
+      const text = getDirectTextOnly(ariaSpan) || ariaSpan.textContent.trim();
+      if (text && text.length > 1 && text.length < 60) {
+        return text;
+      }
+    }
+
+    // Strategy 2: Element with "name" in its class
+    if (card) {
+      for (const sel of [
+        '[class*="connection-card__name"]',
+        '[class*="entity-result__title"] span[aria-hidden="true"]',
+        '[class*="entity-result__title"]',
+        '[class*="card__name"]',
+        '[data-anonymize="person-name"]',
+      ]) {
+        const el = card.querySelector(sel);
+        if (el) {
+          const text = getDirectTextOnly(el) || el.textContent.trim();
+          if (text && text.length > 1 && text.length < 60) return text;
+        }
+      }
+    }
+
+    // Strategy 3: First visually-hidden span (screen reader text, clean name)
+    const visuallyHidden = link.querySelector('.visually-hidden');
+    if (visuallyHidden) {
+      const text = visuallyHidden.textContent.trim();
+      if (text && text.length > 1 && text.length < 60) return text;
+    }
+
+    // Strategy 4: Direct text of the link itself (NOT textContent — just text nodes)
+    const directText = getDirectTextOnly(link);
+    if (directText && directText.length > 1 && directText.length < 60) {
+      return directText;
+    }
+
+    // Strategy 5: If link has only ONE span child, use that
+    const spans = link.querySelectorAll('span');
+    if (spans.length === 1) {
+      const text = spans[0].textContent.trim();
+      if (text && text.length > 1 && text.length < 60) return text;
+    }
+
+    // Strategy 6 (LAST RESORT): link.textContent but try to clean it
+    const fullText = link.textContent.trim();
+    if (fullText && fullText.length > 1) {
+      // Try to detect name+title concatenation by looking for common title patterns
+      const cleaned = cleanNameFromConcatenated(fullText);
+      if (cleaned && cleaned.length > 1 && cleaned.length < 60) return cleaned;
+    }
+
+    return null;
+  }
+
+  /**
+   * If we got a concatenated "NameTitle" string, try to split it.
+   * Looks for transition point where name ends and title begins.
+   */
+  function cleanNameFromConcatenated(text) {
+    if (!text) return text;
+
+    // Common patterns where title starts (case-insensitive match)
+    const titlePatterns = [
+      /^(.{2,40}?)((?:CEO|CTO|CPO|COO|CFO|CMO|VP|SVP|EVP)\b.*)$/i,
+      /^(.{2,40}?)((?:Co-?[Ff]ounder|Founder|Director|Manager|Engineer|Developer|Designer|Analyst|Consultant|Executive|President|Partner|Head of|Chief)\b.*)$/i,
+      /^(.{2,40}?)((?:Senior|Junior|Lead|Staff|Principal)\s+\w+.*)$/i,
+      /^(.{2,40}?)((?:Sales|Marketing|Product|Software|Business|Account|Project|Operations|General|Managing)\s+\w+.*)$/i,
+    ];
+
+    for (const pattern of titlePatterns) {
+      const match = text.match(pattern);
+      if (match && match[1].trim().length >= 2) {
+        return match[1].trim();
+      }
+    }
+
+    // If text has no spaces and is long (like "AdilbeckKamash") — probably OK, it's just a name
+    // If text has newlines, take first line
+    if (text.includes('\n')) {
+      const firstLine = text.split('\n')[0].trim();
+      if (firstLine.length > 1) return firstLine;
+    }
+
+    return text;
+  }
+
+  /**
+   * Extract headline/occupation from card, explicitly NOT from the profile link.
+   */
+  function extractOccupationFromCard(card, name) {
+    if (!card) return '';
+
+    const selectors = [
+      '[class*="occupation"]',
+      '[class*="connection-card__occupation"]',
+      '[class*="entity-result__primary-subtitle"]',
+      '[class*="subline"]',
+      'span.t-14.t-normal.t-black--light',
+      'p.t-14.t-normal',
+    ];
+
+    for (const sel of selectors) {
+      const el = card.querySelector(sel);
+      if (el) {
+        const text = el.textContent.trim().replace(/\s+/g, ' ');
+        if (text && text !== name && text.length > 2 && text.length < 250) {
+          return text;
+        }
+      }
+    }
+
+    // Fallback: look for text elements that are NOT the name element
+    // and NOT action buttons
+    const candidates = card.querySelectorAll('span, p, div');
+    for (const el of candidates) {
+      // Skip if it's inside the link (that's the name area)
+      if (el.closest('a[href*="/in/"]')) continue;
+      // Skip buttons
+      if (el.closest('button')) continue;
+
+      const text = el.textContent.trim().replace(/\s+/g, ' ');
+      if (text && text !== name && text.length > 3 && text.length < 250 &&
+          !text.includes('Connect') && !text.includes('Message') &&
+          !text.includes('Follow') && !text.includes('mutual') &&
+          !text.includes('ago') && !text.includes('Pending') &&
+          !text.match(/^\d+ (connection|follower)/i)) {
+        return text;
+      }
+    }
+
+    return '';
+  }
+
+  // ───────────────────────────
+  // Extract connections from visible DOM
+  // ───────────────────────────
+  function extractConnections() {
+    // Find all list items that contain profile links
+    const cards = document.querySelectorAll('li');
+
+    for (const card of cards) {
+      // Find profile link in this card
+      const link = card.querySelector('a[href*="/in/"]');
+      if (!link) continue;
+
+      const href = link.getAttribute('href');
+      if (!href || !href.includes('/in/')) continue;
+
+      // Build clean URL
+      let cleanUrl = href.split('?')[0].replace(/\/$/, '');
+      if (!cleanUrl.startsWith('http')) {
+        cleanUrl = 'https://www.linkedin.com' + cleanUrl;
+      }
+
+      // Skip if already collected
+      if (collectedLeads.has(cleanUrl)) continue;
+
+      // Extract name using robust strategy
+      const name = extractNameFromCard(link, card);
+      if (!name || name.length < 2 || name === 'LinkedIn Member') continue;
+
+      // Extract occupation (NOT from inside the link!)
+      const headline = extractOccupationFromCard(card, name);
+
+      // Parse company from headline
+      let company = '';
+      if (headline) {
+        const atMatch = headline.match(/(?:\bat\b|\b@\b)\s+(.+)/i);
+        if (atMatch) company = atMatch[1].trim();
+      }
+
+      collectedLeads.set(cleanUrl, {
+        linkedin_url: cleanUrl,
+        name: name.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim(),
+        title: headline ? headline.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim() : null,
+        company: company || null,
+        location: null,
+      });
+    }
+  }
+
+  // ───────────────────────────
+  // Panel UI
   // ───────────────────────────
   function createPanel() {
     const panel = document.createElement('div');
@@ -68,7 +279,7 @@
 
     panel.innerHTML = `
       <div class="conn-header">
-        <span class="conn-header-title">📋 Outreach — Import Connections</span>
+        <span class="conn-header-title">📋 Import Connections</span>
         <button class="conn-close" id="conn-close-btn" title="Close">✕</button>
       </div>
       <div class="conn-body">
@@ -78,12 +289,12 @@
             <div class="conn-stat-label">Found</div>
           </div>
           <div class="conn-stat">
-            <div class="conn-stat-value" id="conn-imported">0</div>
-            <div class="conn-stat-label">Imported</div>
+            <div class="conn-stat-value" id="conn-created">0</div>
+            <div class="conn-stat-label">New</div>
           </div>
           <div class="conn-stat">
-            <div class="conn-stat-value" id="conn-skipped">0</div>
-            <div class="conn-stat-label">Skipped</div>
+            <div class="conn-stat-value" id="conn-updated">0</div>
+            <div class="conn-stat-label">Updated</div>
           </div>
         </div>
 
@@ -98,7 +309,8 @@
         </div>
 
         <div class="conn-status" id="conn-status">
-          Ready to scan your connections and import them as leads.
+          Scan your connections to import them as leads.<br>
+          <small style="color:#999;">Re-scanning updates existing records.</small>
         </div>
 
         <button class="conn-btn conn-btn-primary" id="conn-action-btn">
@@ -111,68 +323,57 @@
 
     document.body.appendChild(panel);
 
-    // Close button
     document.getElementById('conn-close-btn').addEventListener('click', () => {
-      if (isScanning) {
-        shouldStop = true;
-        log('⏹ Stopping scan...');
-      }
+      if (isScanning) { shouldStop = true; }
       panel.remove();
     });
 
-    // Action button
     document.getElementById('conn-action-btn').addEventListener('click', handleAction);
   }
 
   // ───────────────────────────
-  // Action button handler
+  // Scan flow
   // ───────────────────────────
   async function handleAction() {
     const btn = document.getElementById('conn-action-btn');
-
     if (isScanning) {
-      // Stop
       shouldStop = true;
       btn.disabled = true;
       btn.textContent = '⏳ Stopping...';
       return;
     }
 
-    // Check auth first
     const ready = await checkReady();
     if (!ready) {
-      setStatus('🔒 Please log in via the extension popup first.');
+      setStatus('🔒 Log in via the extension popup first.');
       return;
     }
 
-    // Start scanning
     startScan();
   }
 
-  // ───────────────────────────
-  // Scan flow
-  // ───────────────────────────
   async function startScan() {
     isScanning = true;
     shouldStop = false;
     collectedLeads.clear();
-    totalUploaded = 0;
+    totalCreated = 0;
+    totalUpdated = 0;
     totalSkipped = 0;
     updateStats();
 
     const btn = document.getElementById('conn-action-btn');
-    btn.textContent = '⏹ Stop Scanning';
+    btn.textContent = '⏹ Stop';
     btn.className = 'conn-btn conn-btn-danger';
 
     showProgress(true);
     showLog(true);
-    log('🔍 Starting scan...');
-    setStatus('Scrolling through connections...', true);
+    log('🔍 Scanning connections...');
+    setStatus('Auto-scrolling through connections...', true);
 
     let noNewRounds = 0;
     let scrollRound = 0;
+    let lastUploadCount = 0;
 
-    // Scroll to top first
     window.scrollTo({ top: 0, behavior: 'smooth' });
     await sleep(800);
 
@@ -180,7 +381,6 @@
       scrollRound++;
       const beforeCount = collectedLeads.size;
 
-      // Extract visible connections
       extractConnections();
       updateStats();
 
@@ -189,7 +389,7 @@
 
       if (newFound > 0) {
         noNewRounds = 0;
-        log(`📋 Round ${scrollRound}: +${newFound} new (total: ${afterCount})`);
+        log(`📋 Round ${scrollRound}: +${newFound} (total: ${afterCount})`);
       } else {
         noNewRounds++;
         if (noNewRounds >= MAX_NO_NEW_ROUNDS) {
@@ -198,177 +398,72 @@
         }
       }
 
-      // Batch upload every BATCH_SIZE new leads
-      if (collectedLeads.size - totalUploaded - totalSkipped >= BATCH_SIZE) {
-        await uploadBatch();
+      // Upload batch
+      const pendingUpload = collectedLeads.size - lastUploadCount;
+      if (pendingUpload >= BATCH_SIZE) {
+        await uploadBatch(lastUploadCount);
+        lastUploadCount = collectedLeads.size;
       }
 
-      // Update progress (rough estimate based on scroll position)
-      const scrollPct = Math.min(100, Math.round(
-        (window.scrollY / (document.documentElement.scrollHeight - window.innerHeight)) * 100
+      const scrollPct = Math.min(99, Math.round(
+        (window.scrollY / Math.max(1, document.documentElement.scrollHeight - window.innerHeight)) * 100
       ));
       setProgress(scrollPct);
 
-      // Scroll down
       window.scrollBy({ top: SCROLL_AMOUNT, behavior: 'smooth' });
       await sleep(SCROLL_DELAY);
     }
 
-    // Upload remaining
-    if (collectedLeads.size > totalUploaded + totalSkipped) {
-      await uploadBatch();
+    // Final batch
+    if (collectedLeads.size > lastUploadCount) {
+      await uploadBatch(lastUploadCount);
     }
 
-    // Done
     isScanning = false;
     setProgress(100);
-    setStatus(`✅ Done! Imported ${totalUploaded} leads. ${totalSkipped} duplicates skipped.`);
-    log(`🎉 Scan complete: ${collectedLeads.size} found, ${totalUploaded} imported, ${totalSkipped} skipped`);
+    setStatus(`✅ Done! ${totalCreated} new, ${totalUpdated} updated.`);
+    log(`🎉 Complete: ${collectedLeads.size} found, ${totalCreated} created, ${totalUpdated} updated`);
 
     btn.textContent = '🔄 Scan Again';
     btn.className = 'conn-btn conn-btn-primary';
     btn.disabled = false;
   }
 
-  // ───────────────────────────
-  // Extract connections from visible DOM
-  // ───────────────────────────
-  function extractConnections() {
-    // Strategy 1: Modern LinkedIn connection cards
-    // Look for all links to profiles (/in/username)
-    const profileLinks = document.querySelectorAll('a[href*="/in/"]');
-
-    for (const link of profileLinks) {
-      const href = link.getAttribute('href');
-      if (!href || !href.includes('/in/')) continue;
-
-      // Build clean URL
-      let cleanUrl = href.split('?')[0].replace(/\/$/, '');
-      if (!cleanUrl.startsWith('http')) {
-        cleanUrl = 'https://www.linkedin.com' + cleanUrl;
-      }
-
-      // Skip if already collected
-      if (collectedLeads.has(cleanUrl)) continue;
-
-      // Extract name — look for text content in the link or nearby elements
-      let name = '';
-
-      // Try: span inside the link
-      const nameSpan = link.querySelector('span[aria-hidden="true"]');
-      if (nameSpan && nameSpan.textContent.trim()) {
-        name = nameSpan.textContent.trim();
-      }
-
-      // Fallback: direct text content
-      if (!name) {
-        const linkText = link.textContent.trim();
-        // Filter out generic link text
-        if (linkText && linkText.length > 1 && linkText.length < 80 &&
-            !linkText.toLowerCase().includes('view profile') &&
-            !linkText.toLowerCase().includes('see all')) {
-          name = linkText;
-        }
-      }
-
-      // Skip entries without a name
-      if (!name || name.length < 2) continue;
-
-      // Clean up name (remove "LinkedIn Member" or just initials)
-      if (name === 'LinkedIn Member') continue;
-
-      // Extract headline/occupation — look in the card container
-      let headline = '';
-      const card = link.closest('li') || link.closest('[class*="card"]') || link.parentElement?.parentElement;
-      if (card) {
-        // Look for occupation/headline text
-        const occSelectors = [
-          '[class*="occupation"]',
-          '[class*="subline"]',
-          '.mn-connection-card__occupation',
-          'span.t-14.t-normal.t-black--light',
-        ];
-        for (const sel of occSelectors) {
-          const el = card.querySelector(sel);
-          if (el && el.textContent.trim()) {
-            headline = el.textContent.trim();
-            break;
-          }
-        }
-
-        // Fallback: look for any smaller text that looks like a headline
-        if (!headline) {
-          const spans = card.querySelectorAll('span, p');
-          for (const s of spans) {
-            const t = s.textContent.trim();
-            if (t && t !== name && t.length > 5 && t.length < 200 &&
-                !t.includes('Connect') && !t.includes('Message') &&
-                !t.includes('ago') && !t.includes('mutual')) {
-              headline = t;
-              break;
-            }
-          }
-        }
-      }
-
-      // Parse company from headline (e.g. "Software Engineer at Google")
-      let company = '';
-      if (headline) {
-        const atMatch = headline.match(/(?:at|@)\s+(.+)/i);
-        if (atMatch) company = atMatch[1].trim();
-      }
-
-      collectedLeads.set(cleanUrl, {
-        linkedin_url: cleanUrl,
-        name: name.replace(/\n/g, ' ').trim(),
-        title: headline.replace(/\n/g, ' ').trim() || null,
-        company: company || null,
-        location: null,
-      });
-    }
-  }
-
-  // ───────────────────────────
-  // Upload batch to backend
-  // ───────────────────────────
-  async function uploadBatch() {
+  async function uploadBatch(fromIndex) {
     const allLeads = Array.from(collectedLeads.values());
-    const toUpload = allLeads.slice(totalUploaded + totalSkipped);
-
+    const toUpload = allLeads.slice(fromIndex);
     if (toUpload.length === 0) return;
 
     setStatus(`📤 Uploading ${toUpload.length} leads...`, true);
-    log(`📤 Uploading batch of ${toUpload.length} leads...`);
+    log(`📤 Uploading ${toUpload.length} leads...`);
 
     try {
       const result = await api('POST', '/leads/bulk', { leads: toUpload });
-      totalUploaded += result.created || 0;
+      totalCreated += result.created || 0;
+      totalUpdated += result.updated || 0;
       totalSkipped += result.skipped || 0;
       updateStats();
-      log(`✅ Batch uploaded: +${result.created} new, ${result.skipped} duplicates`);
-      setStatus('Scrolling through connections...', true);
+      log(`✅ +${result.created} new, ${result.updated} updated, ${result.skipped} skipped`);
+      setStatus('Auto-scrolling through connections...', true);
     } catch (err) {
       log(`❌ Upload error: ${err.message}`);
-      setStatus('⚠️ Upload error — retrying on next batch', false);
     }
   }
 
   // ───────────────────────────
-  // UI Helpers
+  // UI helpers
   // ───────────────────────────
   function updateStats() {
-    const foundEl = document.getElementById('conn-found');
-    const importedEl = document.getElementById('conn-imported');
-    const skippedEl = document.getElementById('conn-skipped');
-    if (foundEl) foundEl.textContent = collectedLeads.size;
-    if (importedEl) importedEl.textContent = totalUploaded;
-    if (skippedEl) skippedEl.textContent = totalSkipped;
+    const el = (id) => document.getElementById(id);
+    if (el('conn-found')) el('conn-found').textContent = collectedLeads.size;
+    if (el('conn-created')) el('conn-created').textContent = totalCreated;
+    if (el('conn-updated')) el('conn-updated').textContent = totalUpdated;
   }
 
   function setStatus(text, scanning = false) {
     const el = document.getElementById('conn-status');
     if (el) {
-      el.textContent = text;
+      el.innerHTML = text;
       el.className = `conn-status ${scanning ? 'conn-status-scanning' : ''}`;
     }
   }
@@ -406,7 +501,6 @@
   // Init
   // ───────────────────────────
   function init() {
-    // Only show panel if on a connections-like page
     const url = window.location.href;
     if (url.includes('/mynetwork/invite-connect/connections') ||
         url.includes('/mynetwork') ||

@@ -1,14 +1,13 @@
 /**
- * Content Script — injected on LinkedIn profile pages.
+ * Content Script — Profile Sidebar (LinkedIn /in/* pages)
  *
- * As a CPO-level experience:
- *   1. Auto-creates lead on profile visit
- *   2. Shows current stage in a pipeline visualizer
- *   3. Quick-select task presets + custom tasks
- *   4. One-click stage transitions
- *   5. Toggle task completion right from sidebar
- *
- * All API calls go through background.js service worker.
+ * CPO/CTO Flow:
+ *   1. Auto-create lead on first profile visit
+ *   2. Auto-UPDATE lead data on every subsequent visit (title, company, location)
+ *      → "double-check" mechanism: each visit refreshes stale data
+ *   3. Pipeline mini-visualizer
+ *   4. Rich task management: grouped by urgency, relative dates, delete, presets
+ *   5. Smart stage transitions with "NEXT" hints
  */
 
 (function () {
@@ -17,7 +16,7 @@
   if (document.getElementById('outreach-sidebar')) return;
 
   // ───────────────────────────
-  // Quick task presets (CPO: most common outreach tasks)
+  // Task presets — one-tap creation
   // ───────────────────────────
   const TASK_PRESETS = [
     { emoji: '📞', label: 'Follow up' },
@@ -25,7 +24,17 @@
     { emoji: '📅', label: 'Schedule call' },
     { emoji: '📝', label: 'Research' },
     { emoji: '🔔', label: 'Check reply' },
+    { emoji: '🎯', label: 'Pitch' },
   ];
+
+  const STAGES = ['New', 'Invited', 'Connected', 'Messaged', 'Replied', 'Meeting'];
+  const EVENT_FOR_STAGE = {
+    Invited: 'invite_sent',
+    Connected: 'connected',
+    Messaged: 'message_sent',
+    Replied: 'reply_received',
+    Meeting: 'meeting_booked',
+  };
 
   // ───────────────────────────
   // Profile data extraction
@@ -33,13 +42,13 @@
   function extractProfileData() {
     const profileUrl = window.location.href.split('?')[0].replace(/\/$/, '');
 
+    // Name
     let fullName = '';
     const allH1 = document.querySelectorAll('h1');
     for (const h1 of allH1) {
       const text = h1.textContent.trim();
       if (text && text.length > 1 && text.length < 80 && !text.includes('Outreach')) {
-        fullName = text;
-        break;
+        fullName = text; break;
       }
     }
     if (!fullName && document.title) {
@@ -54,6 +63,7 @@
       }
     }
 
+    // Headline
     let headline = '';
     for (const sel of ['div.text-body-medium', '[class*="text-body-medium"]']) {
       const el = document.querySelector(sel);
@@ -64,12 +74,14 @@
       if (parts.length >= 2) headline = parts[1].replace(/\s*\|\s*LinkedIn\s*$/, '').trim();
     }
 
+    // Company
     let company = '';
     for (const sel of ['a[href*="/company/"] span', 'a[href*="/company/"]']) {
       const el = document.querySelector(sel);
       if (el && el.textContent.trim()) { company = el.textContent.trim(); break; }
     }
 
+    // Location
     let location = '';
     for (const sel of [
       'span.text-body-small.inline.t-black--light.break-words',
@@ -83,16 +95,16 @@
   }
 
   // ───────────────────────────
-  // API helper
+  // API / Auth
   // ───────────────────────────
   function api(method, path, body) {
     return new Promise((resolve, reject) => {
       chrome.runtime.sendMessage(
         { action: 'apiRequest', method, path, body },
-        (response) => {
+        (r) => {
           if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
-          if (response && response.error) return reject(new Error(response.error));
-          resolve(response);
+          if (r && r.error) return reject(new Error(r.error));
+          resolve(r);
         }
       );
     });
@@ -100,9 +112,7 @@
 
   function checkReady() {
     return new Promise((resolve) => {
-      chrome.runtime.sendMessage({ action: 'getToken' }, (res) => {
-        resolve(!!(res && res.token));
-      });
+      chrome.runtime.sendMessage({ action: 'getToken' }, (r) => resolve(!!(r && r.token)));
     });
   }
 
@@ -112,14 +122,23 @@
   let currentLead = null;
   let currentTasks = [];
 
-  const STAGES = ['New', 'Invited', 'Connected', 'Messaged', 'Replied', 'Meeting'];
-  const EVENT_FOR_STAGE = {
-    Invited: 'invite_sent',
-    Connected: 'connected',
-    Messaged: 'message_sent',
-    Replied: 'reply_received',
-    Meeting: 'meeting_booked',
-  };
+  // ───────────────────────────
+  // Date helpers
+  // ───────────────────────────
+  function relativeDate(dateStr) {
+    const d = new Date(dateStr);
+    const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const startOfDate = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+    const diffDays = Math.round((startOfDate - startOfToday) / 86400000);
+
+    if (diffDays === 0) return { label: 'Today', cls: 'date-today' };
+    if (diffDays === 1) return { label: 'Tomorrow', cls: 'date-tomorrow' };
+    if (diffDays === -1) return { label: 'Yesterday', cls: 'date-overdue' };
+    if (diffDays < -1) return { label: `${Math.abs(diffDays)}d overdue`, cls: 'date-overdue' };
+    if (diffDays <= 7) return { label: `In ${diffDays}d`, cls: 'date-upcoming' };
+    return { label: d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }), cls: 'date-future' };
+  }
 
   // ───────────────────────────
   // Create Sidebar
@@ -128,9 +147,8 @@
     const sidebar = document.createElement('div');
     sidebar.id = 'outreach-sidebar';
 
-    // Build task preset chips HTML
     const presetsHtml = TASK_PRESETS
-      .map(p => `<button class="outreach-preset-chip" data-label="${p.label}">${p.emoji} ${p.label}</button>`)
+      .map(p => `<button class="preset-chip" data-label="${p.label}">${p.emoji} ${p.label}</button>`)
       .join('');
 
     sidebar.innerHTML = `
@@ -145,48 +163,49 @@
           <p>Loading...</p>
         </div>
 
-        <!-- Auth required -->
+        <!-- Auth -->
         <div id="outreach-auth-required" style="display:none;" class="outreach-center-msg">
-          <div style="font-size:32px; margin-bottom:8px;">🔒</div>
+          <div style="font-size:32px;margin-bottom:8px;">🔒</div>
           <p>Log in via the extension popup first</p>
         </div>
 
         <!-- Lead Info -->
         <div id="outreach-lead-info" style="display:none;">
-          <!-- Name + company -->
-          <div class="outreach-profile-card">
-            <div class="outreach-profile-name" id="outreach-lead-name"></div>
-            <div class="outreach-profile-subtitle" id="outreach-lead-subtitle"></div>
-          </div>
-
-          <!-- Pipeline mini-visualizer -->
-          <div class="outreach-pipeline" id="outreach-pipeline"></div>
-
-          <!-- Tasks -->
-          <div class="outreach-section">
-            <div class="outreach-section-header">
-              <span class="outreach-label">📋 Tasks</span>
-              <span class="outreach-task-count" id="outreach-task-count">0</span>
-            </div>
-            <div id="outreach-tasks" class="outreach-tasks-list"></div>
-
-            <!-- Quick task presets -->
-            <div class="outreach-presets">${presetsHtml}</div>
-
-            <!-- Custom task form -->
-            <div class="outreach-add-task-form">
-              <div class="outreach-add-task-row">
-                <input type="text" id="outreach-task-type" placeholder="Custom task..." class="outreach-task-input" />
-                <input type="date" id="outreach-task-due" class="outreach-task-date" />
-                <button id="outreach-add-task-btn" class="outreach-btn-add" title="Add task">+</button>
-              </div>
+          <!-- Profile card with auto-update badge -->
+          <div class="profile-card">
+            <div class="profile-name" id="lead-name"></div>
+            <div class="profile-subtitle" id="lead-subtitle"></div>
+            <div class="profile-updated" id="lead-updated-badge" style="display:none;">
+              ↻ Profile data refreshed
             </div>
           </div>
 
-          <!-- Stage Actions -->
-          <div class="outreach-section">
-            <div class="outreach-label">⚡ Actions</div>
-            <div class="outreach-actions" id="outreach-actions"></div>
+          <!-- Pipeline -->
+          <div class="pipeline" id="pipeline"></div>
+
+          <!-- Tasks Section -->
+          <div class="section tasks-section">
+            <div class="section-header">
+              <span class="section-title">📋 Tasks</span>
+              <div class="task-counts" id="task-counts"></div>
+            </div>
+            <div id="tasks-container"></div>
+
+            <!-- Presets -->
+            <div class="presets-wrap">${presetsHtml}</div>
+
+            <!-- Add form -->
+            <div class="task-add-row">
+              <input type="text" id="task-input" placeholder="New task..." class="task-input" />
+              <input type="date" id="task-date" class="task-date-input" />
+              <button id="task-add-btn" class="btn-add" title="Add">+</button>
+            </div>
+          </div>
+
+          <!-- Actions Section -->
+          <div class="section">
+            <div class="section-title" style="margin-bottom:8px;">⚡ Stage Actions</div>
+            <div id="actions-container"></div>
           </div>
         </div>
 
@@ -204,67 +223,75 @@
         sidebar.classList.contains('collapsed') ? '▶' : '◀';
     });
 
-    // Add Task button
-    document.getElementById('outreach-add-task-btn').addEventListener('click', handleAddTask);
-    document.getElementById('outreach-task-type').addEventListener('keydown', (e) => {
+    // Add task
+    document.getElementById('task-add-btn').addEventListener('click', handleAddTask);
+    document.getElementById('task-input').addEventListener('keydown', (e) => {
       if (e.key === 'Enter') handleAddTask();
     });
 
-    // Preset chips
-    document.querySelectorAll('.outreach-preset-chip').forEach((chip) => {
+    // Presets
+    document.querySelectorAll('.preset-chip').forEach((chip) => {
       chip.addEventListener('click', () => {
-        document.getElementById('outreach-task-type').value = chip.dataset.label;
+        document.getElementById('task-input').value = chip.dataset.label;
         handleAddTask();
       });
     });
 
-    // Default due date → tomorrow
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    document.getElementById('outreach-task-due').value = tomorrow.toISOString().split('T')[0];
+    // Default date → tomorrow
+    const tmrw = new Date();
+    tmrw.setDate(tmrw.getDate() + 1);
+    document.getElementById('task-date').value = tmrw.toISOString().split('T')[0];
   }
 
   // ───────────────────────────
-  // Add Task
+  // Add / Toggle / Delete Task
   // ───────────────────────────
   async function handleAddTask() {
     if (!currentLead) return;
-    const typeInput = document.getElementById('outreach-task-type');
-    const dueInput = document.getElementById('outreach-task-due');
-    const addBtn = document.getElementById('outreach-add-task-btn');
+    const inp = document.getElementById('task-input');
+    const dateInp = document.getElementById('task-date');
+    const btn = document.getElementById('task-add-btn');
 
-    const taskType = typeInput.value.trim();
+    const taskType = inp.value.trim();
     if (!taskType) {
-      typeInput.focus();
-      typeInput.classList.add('shake');
-      setTimeout(() => typeInput.classList.remove('shake'), 500);
+      inp.focus();
+      inp.classList.add('shake');
+      setTimeout(() => inp.classList.remove('shake'), 500);
       return;
     }
 
-    addBtn.disabled = true;
-    addBtn.textContent = '⏳';
+    btn.disabled = true;
+    btn.textContent = '⏳';
 
     try {
       const body = { lead_id: currentLead.id, type: taskType };
-      if (dueInput.value) body.due_at = new Date(dueInput.value + 'T12:00:00').toISOString();
-
+      if (dateInp.value) body.due_at = new Date(dateInp.value + 'T12:00:00').toISOString();
       await api('POST', '/tasks', body);
-      typeInput.value = '';
+      inp.value = '';
       showToast('Task added ✓');
-
       await reloadTasks();
     } catch (err) {
       showToast('Error: ' + err.message, 'error');
     } finally {
-      addBtn.disabled = false;
-      addBtn.textContent = '+';
+      btn.disabled = false;
+      btn.textContent = '+';
     }
   }
 
-  async function toggleTaskStatus(taskId, newStatus) {
+  async function toggleTask(taskId, newStatus) {
     try {
       await api('PATCH', `/tasks/${taskId}`, { status: newStatus });
       showToast(newStatus === 'done' ? 'Done ✓' : 'Reopened');
+      await reloadTasks();
+    } catch (err) {
+      showToast('Error: ' + err.message, 'error');
+    }
+  }
+
+  async function deleteTask(taskId) {
+    try {
+      await api('DELETE', `/tasks/${taskId}`);
+      showToast('Deleted');
       await reloadTasks();
     } catch (err) {
       showToast('Error: ' + err.message, 'error');
@@ -277,24 +304,22 @@
       const r = await api('GET', `/leads/by-url?url=${encodeURIComponent(currentLead.linkedin_url)}`);
       if (r.lead) {
         currentTasks = r.tasks || [];
-        renderTasksList();
+        renderTasks();
       }
     } catch (_) { /* silent */ }
   }
 
   // ───────────────────────────
-  // Toast notification
+  // Toast
   // ───────────────────────────
   function showToast(text, type = 'success') {
     let toast = document.getElementById('outreach-toast');
     if (toast) toast.remove();
-
     toast = document.createElement('div');
     toast.id = 'outreach-toast';
-    toast.className = `outreach-toast ${type === 'error' ? 'outreach-toast-error' : 'outreach-toast-success'}`;
+    toast.className = `outreach-toast ${type === 'error' ? 'toast-error' : 'toast-success'}`;
     toast.textContent = text;
     document.body.appendChild(toast);
-
     requestAnimationFrame(() => toast.classList.add('show'));
     setTimeout(() => {
       toast.classList.remove('show');
@@ -303,7 +328,7 @@
   }
 
   // ───────────────────────────
-  // Load lead data
+  // Load lead data + AUTO-UPDATE
   // ───────────────────────────
   async function loadLeadData() {
     const profile = extractProfileData();
@@ -316,13 +341,19 @@
 
     try {
       const result = await api('GET', `/leads/by-url?url=${encodeURIComponent(profile.linkedin_url)}`);
+
       if (result.lead) {
         currentLead = result.lead;
         currentTasks = result.tasks || [];
+
+        // ── AUTO-UPDATE: compare extracted data with stored data ──
+        await autoUpdateLead(profile, result.lead);
+
         renderLeadInfo();
         return;
       }
 
+      // Lead not found → create
       if (!profile.name) {
         showError('Could not extract profile name. Refresh the page.');
         return;
@@ -333,6 +364,7 @@
       currentTasks = [];
       showToast('Lead auto-created ✓');
       renderLeadInfo();
+
     } catch (err) {
       if (err.message.includes('already exists')) {
         try {
@@ -350,126 +382,261 @@
     }
   }
 
+  /**
+   * Auto-update: If the page shows different data than what's stored,
+   * update the lead record. This is the "double-check" mechanism —
+   * every profile visit keeps data fresh.
+   */
+  async function autoUpdateLead(extracted, stored) {
+    const changes = {};
+    let hasChanges = false;
+
+    // Only update non-empty extracted values that differ from stored
+    if (extracted.name && extracted.name !== stored.name) {
+      changes.name = extracted.name;
+      hasChanges = true;
+    }
+    if (extracted.title && extracted.title !== stored.title) {
+      changes.title = extracted.title;
+      hasChanges = true;
+    }
+    if (extracted.company && extracted.company !== stored.company) {
+      changes.company = extracted.company;
+      hasChanges = true;
+    }
+    if (extracted.location && extracted.location !== stored.location) {
+      changes.location = extracted.location;
+      hasChanges = true;
+    }
+
+    if (hasChanges) {
+      try {
+        const result = await api('PATCH', `/leads/${stored.id}`, changes);
+        if (result.lead) {
+          currentLead = result.lead;
+          // Show subtle "updated" badge
+          const badge = document.getElementById('lead-updated-badge');
+          if (badge) {
+            badge.style.display = 'block';
+            setTimeout(() => { badge.style.display = 'none'; }, 4000);
+          }
+          console.log('[Outreach] Auto-updated lead:', Object.keys(changes).join(', '));
+        }
+      } catch (err) {
+        console.warn('[Outreach] Auto-update failed:', err.message);
+      }
+    }
+  }
+
   // ───────────────────────────
-  // Render
+  // Render: Lead Info
   // ───────────────────────────
   function renderLeadInfo() {
     showSection('outreach-lead-info');
 
-    document.getElementById('outreach-lead-name').textContent = currentLead.name;
-    document.getElementById('outreach-lead-subtitle').textContent =
-      [currentLead.title, currentLead.company].filter(Boolean).join(' · ') || '';
+    document.getElementById('lead-name').textContent = currentLead.name;
+    document.getElementById('lead-subtitle').textContent =
+      [currentLead.title, currentLead.company].filter(Boolean).join(' · ') || 'No details yet';
 
     renderPipeline();
-    renderTasksList();
-    renderActionButtons();
+    renderTasks();
+    renderActions();
   }
 
+  // ───────────────────────────
+  // Render: Pipeline
+  // ───────────────────────────
   function renderPipeline() {
-    const container = document.getElementById('outreach-pipeline');
-    const currentIdx = STAGES.indexOf(currentLead.stage);
+    const el = document.getElementById('pipeline');
+    const ci = STAGES.indexOf(currentLead.stage);
 
-    container.innerHTML = STAGES.map((stage, idx) => {
-      let cls = 'outreach-pipe-step';
-      if (idx < currentIdx) cls += ' passed';
-      if (idx === currentIdx) cls += ' active';
-      return `<div class="${cls}"><span class="pipe-dot"></span><span class="pipe-label">${stage}</span></div>`;
-    }).join('<div class="outreach-pipe-line"></div>');
+    el.innerHTML = STAGES.map((s, i) => {
+      let cls = 'pipe-step';
+      if (i < ci) cls += ' passed';
+      if (i === ci) cls += ' active';
+      return `<div class="${cls}"><span class="pipe-dot"></span><span class="pipe-lbl">${s}</span></div>`;
+    }).join('<div class="pipe-line"></div>');
   }
 
-  function renderTasksList() {
-    const container = document.getElementById('outreach-tasks');
-    const countEl = document.getElementById('outreach-task-count');
-    const openCount = currentTasks.filter(t => t.status === 'open').length;
-    countEl.textContent = openCount;
+  // ───────────────────────────
+  // Render: Tasks (grouped by urgency)
+  // ───────────────────────────
+  function renderTasks() {
+    const container = document.getElementById('tasks-container');
+    const countsEl = document.getElementById('task-counts');
+
+    const open = currentTasks.filter(t => t.status === 'open');
+    const done = currentTasks.filter(t => t.status === 'done');
+    const overdue = open.filter(t => new Date(t.due_at) < new Date());
+    const today = open.filter(t => {
+      const d = relativeDate(t.due_at);
+      return d.label === 'Today';
+    });
+    const upcoming = open.filter(t => {
+      const d = relativeDate(t.due_at);
+      return d.cls === 'date-tomorrow' || d.cls === 'date-upcoming' || d.cls === 'date-future';
+    });
+
+    // Counts badges
+    countsEl.innerHTML = '';
+    if (overdue.length > 0) {
+      countsEl.innerHTML += `<span class="count-badge overdue-badge">${overdue.length} overdue</span>`;
+    }
+    if (open.length > 0) {
+      countsEl.innerHTML += `<span class="count-badge open-badge">${open.length} open</span>`;
+    }
 
     if (currentTasks.length === 0) {
-      container.innerHTML = '<div class="outreach-empty">No tasks yet — add one below</div>';
+      container.innerHTML = `
+        <div class="tasks-empty">
+          <div style="font-size:24px;margin-bottom:6px;">📝</div>
+          <div>No tasks yet</div>
+          <div style="font-size:11px;color:#bbb;margin-top:2px;">Use presets below or type a custom task</div>
+        </div>`;
       return;
     }
 
-    // Sort: open first (overdue at top), done at bottom
-    const sorted = [...currentTasks].sort((a, b) => {
-      if (a.status !== b.status) return a.status === 'open' ? -1 : 1;
-      const aOverdue = a.status === 'open' && new Date(a.due_at) < new Date();
-      const bOverdue = b.status === 'open' && new Date(b.due_at) < new Date();
-      if (aOverdue !== bOverdue) return aOverdue ? -1 : 1;
-      return new Date(a.due_at) - new Date(b.due_at);
+    let html = '';
+
+    // Overdue group
+    if (overdue.length > 0) {
+      html += `<div class="task-group">
+        <div class="task-group-header overdue-header">
+          <span class="pulse-dot"></span> Overdue (${overdue.length})
+        </div>
+        ${overdue.sort((a, b) => new Date(a.due_at) - new Date(b.due_at)).map(t => renderTaskItem(t)).join('')}
+      </div>`;
+    }
+
+    // Today group
+    if (today.length > 0) {
+      html += `<div class="task-group">
+        <div class="task-group-header today-header">📌 Today (${today.length})</div>
+        ${today.map(t => renderTaskItem(t)).join('')}
+      </div>`;
+    }
+
+    // Upcoming group
+    if (upcoming.length > 0) {
+      html += `<div class="task-group">
+        <div class="task-group-header">📅 Upcoming (${upcoming.length})</div>
+        ${upcoming.sort((a, b) => new Date(a.due_at) - new Date(b.due_at)).map(t => renderTaskItem(t)).join('')}
+      </div>`;
+    }
+
+    // Done group (collapsed)
+    if (done.length > 0) {
+      html += `<div class="task-group done-group">
+        <div class="task-group-header done-header" id="toggle-done">
+          ✅ Done (${done.length}) <span class="toggle-arrow">▸</span>
+        </div>
+        <div class="done-list" id="done-list" style="display:none;">
+          ${done.slice(0, 10).map(t => renderTaskItem(t)).join('')}
+          ${done.length > 10 ? `<div class="tasks-more">+${done.length - 10} more</div>` : ''}
+        </div>
+      </div>`;
+    }
+
+    container.innerHTML = html;
+
+    // Toggle done section
+    const toggleDone = container.querySelector('#toggle-done');
+    if (toggleDone) {
+      toggleDone.addEventListener('click', () => {
+        const list = container.querySelector('#done-list');
+        const arrow = toggleDone.querySelector('.toggle-arrow');
+        const show = list.style.display === 'none';
+        list.style.display = show ? 'block' : 'none';
+        arrow.textContent = show ? '▾' : '▸';
+      });
+    }
+
+    // Task action listeners
+    container.querySelectorAll('.task-check').forEach(btn => {
+      btn.addEventListener('click', () => toggleTask(btn.dataset.id, btn.dataset.to));
     });
-
-    container.innerHTML = sorted.map((t) => {
-      const overdue = t.status === 'open' && new Date(t.due_at) < new Date();
-      const isDone = t.status === 'done';
-      const icon = isDone ? '✅' : overdue ? '🔴' : '⬜';
-      const dueDateStr = new Date(t.due_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-
-      return `
-        <div class="outreach-task ${overdue ? 'overdue' : ''} ${isDone ? 'done' : ''}">
-          <button class="task-toggle" data-task-id="${t.id}" data-new-status="${isDone ? 'open' : 'done'}">${icon}</button>
-          <span class="task-text ${isDone ? 'strikethrough' : ''}">${t.type}</span>
-          <span class="task-date ${overdue ? 'text-red' : ''}">${dueDateStr}</span>
-        </div>`;
-    }).join('');
-
-    container.querySelectorAll('.task-toggle').forEach((btn) => {
-      btn.addEventListener('click', () => toggleTaskStatus(btn.dataset.taskId, btn.dataset.newStatus));
+    container.querySelectorAll('.task-del').forEach(btn => {
+      btn.addEventListener('click', () => deleteTask(btn.dataset.id));
     });
   }
 
-  function renderActionButtons() {
-    const container = document.getElementById('outreach-actions');
-    const currentIdx = STAGES.indexOf(currentLead.stage);
+  function renderTaskItem(t) {
+    const isDone = t.status === 'done';
+    const rd = relativeDate(t.due_at);
+    const isOverdue = !isDone && rd.cls === 'date-overdue';
+    const icon = isDone ? '✅' : isOverdue ? '🔴' : '⬜';
 
-    const BTN_CONFIG = [
-      { event: 'invite_sent', emoji: '📩', label: 'Invite Sent', cls: 'invite' },
-      { event: 'connected', emoji: '🤝', label: 'Connected', cls: 'connected' },
-      { event: 'message_sent', emoji: '💬', label: 'Message Sent', cls: 'message' },
-      { event: 'reply_received', emoji: '📨', label: 'Reply Received', cls: 'reply' },
-      { event: 'meeting_booked', emoji: '📅', label: 'Meeting Booked', cls: 'meeting' },
+    return `
+      <div class="task-item ${isDone ? 'task-done' : ''} ${isOverdue ? 'task-overdue' : ''}">
+        <button class="task-check" data-id="${t.id}" data-to="${isDone ? 'open' : 'done'}" title="${isDone ? 'Reopen' : 'Complete'}">${icon}</button>
+        <div class="task-body">
+          <span class="task-name ${isDone ? 'task-strike' : ''}">${escHtml(t.type)}</span>
+          <span class="task-due ${rd.cls}">${rd.label}</span>
+        </div>
+        <button class="task-del" data-id="${t.id}" title="Delete">✕</button>
+      </div>`;
+  }
+
+  function escHtml(s) {
+    return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  // ───────────────────────────
+  // Render: Stage Actions
+  // ───────────────────────────
+  function renderActions() {
+    const el = document.getElementById('actions-container');
+    const ci = STAGES.indexOf(currentLead.stage);
+
+    const BTN = [
+      { ev: 'invite_sent', emoji: '📩', lbl: 'Invite Sent', cls: 'invite' },
+      { ev: 'connected', emoji: '🤝', lbl: 'Connected', cls: 'connected' },
+      { ev: 'message_sent', emoji: '💬', lbl: 'Message Sent', cls: 'message' },
+      { ev: 'reply_received', emoji: '📨', lbl: 'Reply Received', cls: 'reply' },
+      { ev: 'meeting_booked', emoji: '📅', lbl: 'Meeting Booked', cls: 'meeting' },
     ];
 
-    container.innerHTML = BTN_CONFIG.map((cfg) => {
-      const targetStage = Object.entries(EVENT_FOR_STAGE).find(([_, ev]) => ev === cfg.event);
-      const targetIdx = targetStage ? STAGES.indexOf(targetStage[0]) : -1;
-      const isPassed = targetIdx <= currentIdx;
-      const isNext = targetIdx === currentIdx + 1;
+    el.innerHTML = BTN.map(b => {
+      const ts = Object.entries(EVENT_FOR_STAGE).find(([_, e]) => e === b.ev);
+      const ti = ts ? STAGES.indexOf(ts[0]) : -1;
+      const passed = ti <= ci;
+      const next = ti === ci + 1;
 
       return `
-        <button class="outreach-action-btn outreach-btn-${cfg.cls} ${isPassed ? 'passed' : ''} ${isNext ? 'next-action' : ''}"
-                data-event="${cfg.event}" ${isPassed ? 'disabled' : ''}>
-          ${cfg.emoji} ${cfg.label}
-          ${isPassed ? '<span class="check-mark">✓</span>' : ''}
-          ${isNext ? '<span class="next-badge">NEXT</span>' : ''}
+        <button class="action-btn action-${b.cls} ${passed ? 'passed' : ''} ${next ? 'next-action' : ''}"
+                data-event="${b.ev}" ${passed ? 'disabled' : ''}>
+          <span>${b.emoji} ${b.lbl}</span>
+          ${passed ? '<span class="act-check">✓</span>' : ''}
+          ${next ? '<span class="act-next">NEXT</span>' : ''}
         </button>`;
     }).join('');
 
-    container.querySelectorAll('.outreach-action-btn:not([disabled])').forEach((btn) => {
+    el.querySelectorAll('.action-btn:not([disabled])').forEach(btn => {
       btn.addEventListener('click', async () => {
-        const eventType = btn.dataset.event;
         btn.disabled = true;
-        const origHtml = btn.innerHTML;
+        const orig = btn.innerHTML;
         btn.innerHTML = '<span class="outreach-spinner-small"></span> Recording...';
         try {
-          await api('POST', '/events', { lead_id: currentLead.id, type: eventType });
+          await api('POST', '/events', { lead_id: currentLead.id, type: btn.dataset.event });
           showToast('Stage updated ✓');
           await loadLeadData();
         } catch (err) {
           showToast('Error: ' + err.message, 'error');
           btn.disabled = false;
-          btn.innerHTML = origHtml;
+          btn.innerHTML = orig;
         }
       });
     });
   }
 
   // ───────────────────────────
-  // Section visibility
+  // Helpers
   // ───────────────────────────
   function showSection(id) {
     ['outreach-loading', 'outreach-lead-info', 'outreach-auth-required', 'outreach-error']
-      .forEach(sId => {
-        const el = document.getElementById(sId);
-        if (el) el.style.display = sId === id ? 'block' : 'none';
+      .forEach(s => {
+        const el = document.getElementById(s);
+        if (el) el.style.display = s === id ? 'block' : 'none';
       });
   }
 
@@ -480,16 +647,15 @@
   }
 
   // ───────────────────────────
-  // SPA navigation
+  // SPA nav detection
   // ───────────────────────────
   let lastUrl = window.location.href;
-
-  function watchNavigation() {
+  function watchNav() {
     setInterval(() => {
-      const currentUrl = window.location.href;
-      if (currentUrl !== lastUrl) {
-        lastUrl = currentUrl;
-        if (currentUrl.includes('linkedin.com/in/')) {
+      const cur = window.location.href;
+      if (cur !== lastUrl) {
+        lastUrl = cur;
+        if (cur.includes('linkedin.com/in/')) {
           currentLead = null;
           currentTasks = [];
           setTimeout(loadLeadData, 2000);
@@ -504,7 +670,7 @@
   function init() {
     createSidebar();
     setTimeout(loadLeadData, 2000);
-    watchNavigation();
+    watchNav();
   }
 
   if (document.readyState === 'loading') {

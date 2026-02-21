@@ -132,6 +132,7 @@ router.post('/bulk', authenticate, async (req, res) => {
     }
 
     let created = 0;
+    let updated = 0;
     let skipped = 0;
 
     for (const lead of leads) {
@@ -140,19 +141,25 @@ router.post('/bulk', authenticate, async (req, res) => {
         continue;
       }
       try {
-        await db.query(
+        const { rows } = await db.query(
           `INSERT INTO leads (linkedin_url, name, title, company, location, stage, owner_employee_id)
            VALUES ($1, $2, $3, $4, $5, 'Connected', $6)
-           ON CONFLICT (linkedin_url) DO NOTHING`,
+           ON CONFLICT (linkedin_url) DO UPDATE SET
+             name = COALESCE(NULLIF(EXCLUDED.name, ''), leads.name),
+             title = COALESCE(NULLIF(EXCLUDED.title, ''), leads.title),
+             company = COALESCE(NULLIF(EXCLUDED.company, ''), leads.company),
+             location = COALESCE(NULLIF(EXCLUDED.location, ''), leads.location)
+           RETURNING (xmax = 0) AS is_new`,
           [lead.linkedin_url, lead.name, lead.title || null, lead.company || null, lead.location || null, req.employee.id]
         );
-        created++;
+        if (rows[0]?.is_new) created++;
+        else updated++;
       } catch {
         skipped++;
       }
     }
 
-    res.status(201).json({ created, skipped, total: leads.length });
+    res.status(201).json({ created, updated, skipped, total: leads.length });
   } catch (err) {
     console.error('Bulk import error:', err);
     res.status(500).json({ error: 'Internal server error' });
