@@ -1,12 +1,10 @@
 @echo off
-chcp 65001 >nul
 echo.
-echo  Генерирую простые иконки для расширения...
+echo  Generating extension icons...
 echo.
 
 cd /d "%~dp0extension\icons"
 
-:: Создаём простые PNG через PowerShell (белый круг на синем фоне с буквой O)
 powershell -Command ^
   "Add-Type -AssemblyName System.Drawing; ^
    $sizes = @(16, 48, 128); ^
@@ -26,10 +24,10 @@ powershell -Command ^
      $g.Dispose(); ^
      $bmp.Save(\"icon${s}.png\", [System.Drawing.Imaging.ImageFormat]::Png); ^
      $bmp.Dispose(); ^
-     Write-Host \"  ✅ icon${s}.png\"; ^
+     Write-Host \"  OK: icon${s}.png\"; ^
    }"
 
 echo.
-echo  Готово!
+echo  Done!
 echo.
 pause
