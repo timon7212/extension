@@ -22,32 +22,45 @@
   function extractProfileData() {
     const profileUrl = window.location.href.split('?')[0].replace(/\/$/, '');
 
-    // Name — try multiple selectors (LinkedIn changes classes frequently)
-    const nameSelectors = [
-      'h1.text-heading-xlarge',
-      'h1[class*="text-heading"]',
-      '.pv-text-details__left-panel h1',
-      '.ph5 h1',
-      'main h1',
-      'h1',
-    ];
+    // ── Name extraction (multiple strategies) ──
     let fullName = '';
-    for (const sel of nameSelectors) {
-      const el = document.querySelector(sel);
-      if (el && el.textContent.trim()) {
-        fullName = el.textContent.trim();
+
+    // Strategy 1: Query all h1 elements and find the one most likely to be a person name
+    const allH1 = document.querySelectorAll('h1');
+    for (const h1 of allH1) {
+      const text = h1.textContent.trim();
+      // Skip our own sidebar header or very short/long texts
+      if (text && text.length > 1 && text.length < 80 && !text.includes('Outreach')) {
+        fullName = text;
         break;
       }
     }
 
-    // Headline / Title
+    // Strategy 2: LinkedIn page title is usually "Firstname Lastname - Title | LinkedIn"
+    if (!fullName && document.title) {
+      const titleMatch = document.title.match(/^(.+?)\s*[-–|]/);
+      if (titleMatch && titleMatch[1].trim().length > 1) {
+        fullName = titleMatch[1].trim();
+      }
+    }
+
+    // Strategy 3: og:title meta tag
+    if (!fullName) {
+      const ogTitle = document.querySelector('meta[property="og:title"]');
+      if (ogTitle && ogTitle.content) {
+        const ogMatch = ogTitle.content.match(/^(.+?)\s*[-–|]/);
+        fullName = ogMatch ? ogMatch[1].trim() : ogTitle.content.trim();
+      }
+    }
+
+    // ── Headline / Title ──
+    let headline = '';
+    // Try multiple selectors
     const headlineSelectors = [
       'div.text-body-medium',
-      '.pv-text-details__left-panel div[class*="text-body-medium"]',
-      '.ph5 .text-body-medium',
-      'main section div.text-body-medium',
+      '[class*="text-body-medium"]',
+      'main section .text-body-medium',
     ];
-    let headline = '';
     for (const sel of headlineSelectors) {
       const el = document.querySelector(sel);
       if (el && el.textContent.trim()) {
@@ -55,15 +68,20 @@
         break;
       }
     }
+    // Fallback: parse from page title "Name - Headline | LinkedIn"
+    if (!headline && document.title) {
+      const parts = document.title.split(/\s*[-–]\s*/);
+      if (parts.length >= 2) {
+        headline = parts[1].replace(/\s*\|\s*LinkedIn\s*$/, '').trim();
+      }
+    }
 
-    // Company — try experience section first, fallback to headline parsing
+    // ── Company ──
     let company = '';
     const companySelectors = [
       'div.pv-text-details__right-panel .inline-show-more-text',
-      'div.pv-text-details__right-panel a[href*="company"]',
-      'ul.pv-text-details__right-panel li:first-child',
-      'a[href*="/company/"] div',
-      '.experience-item a[href*="company"]',
+      'a[href*="/company/"] span',
+      'a[href*="/company/"]',
     ];
     for (const sel of companySelectors) {
       const el = document.querySelector(sel);
@@ -73,14 +91,13 @@
       }
     }
 
-    // Location
+    // ── Location ──
+    let location = '';
     const locationSelectors = [
       'span.text-body-small.inline.t-black--light.break-words',
-      '.pv-text-details__left-panel span[class*="text-body-small"]',
-      '.ph5 span.text-body-small',
+      '[class*="text-body-small"][class*="t-black--light"]',
       'main section span.text-body-small',
     ];
-    let location = '';
     for (const sel of locationSelectors) {
       const el = document.querySelector(sel);
       if (el && el.textContent.trim()) {
@@ -89,7 +106,14 @@
       }
     }
 
-    console.log('[Outreach] Extracted profile:', { profileUrl, fullName, headline, company, location });
+    console.log('[Outreach] === Profile extraction ===');
+    console.log('[Outreach] URL:', profileUrl);
+    console.log('[Outreach] Name:', fullName || '(EMPTY!)');
+    console.log('[Outreach] Title:', headline);
+    console.log('[Outreach] Company:', company);
+    console.log('[Outreach] Location:', location);
+    console.log('[Outreach] Page title:', document.title);
+    console.log('[Outreach] All h1 on page:', [...document.querySelectorAll('h1')].map(e => e.textContent.trim()));
 
     return {
       linkedin_url: profileUrl,
