@@ -37,6 +37,9 @@ CREATE TABLE leads (
     title VARCHAR(500),
     company VARCHAR(255),
     location VARCHAR(255),
+    tenure_months INT,
+    data_quality VARCHAR(20) NOT NULL DEFAULT 'complete'
+        CHECK (data_quality IN ('complete', 'partial', 'needs_enrichment')),
     campaign_tag VARCHAR(255),
     stage lead_stage NOT NULL DEFAULT 'New',
     owner_employee_id UUID NOT NULL REFERENCES employees(id),
@@ -47,6 +50,7 @@ CREATE TABLE leads (
 CREATE INDEX idx_leads_owner ON leads(owner_employee_id);
 CREATE INDEX idx_leads_stage ON leads(stage);
 CREATE INDEX idx_leads_campaign ON leads(campaign_tag);
+CREATE INDEX idx_leads_quality ON leads(data_quality);
 
 -- =====================
 -- EVENTS
@@ -91,10 +95,3 @@ CREATE TABLE tasks (
 CREATE INDEX idx_tasks_employee ON tasks(employee_id);
 CREATE INDEX idx_tasks_status ON tasks(status);
 CREATE INDEX idx_tasks_due ON tasks(due_at);
-
--- =====================
--- SEED: Admin user (password: admin123)
--- Hash generated with bcrypt, 10 rounds
--- =====================
--- INSERT INTO employees (email, password_hash, name, role)
--- VALUES ('admin@outreach.local', '<bcrypt_hash>', 'Admin', 'admin');

@@ -1,13 +1,13 @@
 /**
  * Content Script — Profile Sidebar (LinkedIn /in/* pages)
  *
- * CPO/CTO Flow:
- *   1. Auto-create lead on first profile visit
- *   2. Auto-UPDATE lead data on every subsequent visit (title, company, location)
- *      → "double-check" mechanism: each visit refreshes stale data
- *   3. Pipeline mini-visualizer
- *   4. Rich task management: grouped by urgency, relative dates, delete, presets
- *   5. Smart stage transitions with "NEXT" hints
+ * v3 Flow:
+ *   1. Extract data from Experience section (title, company, tenure) — most reliable
+ *   2. Fallback to headline/header if Experience unavailable
+ *   3. Auto-create lead on first profile visit
+ *   4. Auto-UPDATE lead data on every subsequent visit ("double-check")
+ *   5. Pipeline, tasks, stage actions, activity log
+ *   6. data_quality flag: 'complete' / 'partial' / 'needs_enrichment'
  */
 
 (function () {
@@ -37,12 +37,168 @@
   };
 
   // ───────────────────────────
-  // Profile data extraction
+  // Profile data extraction — V3 (Experience-first)
   // ───────────────────────────
+
+  /**
+   * Parse a LinkedIn date range like "Feb 2026 - Present · 1 mo" or "Jul 2025 - Feb 2026 · 8 mos"
+   * Returns tenure in months (integer) or null.
+   */
+  function parseTenure(dateText) {
+    if (!dateText) return null;
+
+    // Try explicit duration: "1 yr 3 mos", "8 mos", "2 yrs"
+    const durMatch = dateText.match(/(\d+)\s*yr/);
+    const mosMatch = dateText.match(/(\d+)\s*mo/);
+
+    if (durMatch || mosMatch) {
+      return (parseInt(durMatch?.[1] || 0) * 12) + parseInt(mosMatch?.[1] || 0);
+    }
+
+    // Try to calculate from start date to now if "Present" is mentioned
+    const startMatch = dateText.match(/(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+(\d{4})/i);
+    if (startMatch && /present/i.test(dateText)) {
+      const months = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+      const startMonth = months[startMatch[1].toLowerCase().substring(0, 3)];
+      const startYear = parseInt(startMatch[2]);
+      const now = new Date();
+      return (now.getFullYear() - startYear) * 12 + (now.getMonth() - startMonth);
+    }
+
+    return null;
+  }
+
+  /**
+   * Extract current position from the Experience section.
+   * Returns { title, company, tenureMonths } or null.
+   */
+  function extractFromExperience() {
+    // LinkedIn Experience section: look for the section with id containing "experience"
+    // or a section header that says "Experience"
+    const experienceSection =
+      document.getElementById('experience') ||
+      document.querySelector('section[id*="experience"]') ||
+      document.querySelector('[data-view-name="profile-card-experience"]');
+
+    // If no dedicated section, find it by heading text
+    let section = experienceSection;
+    if (!section) {
+      const headings = document.querySelectorAll('h2, span.pvs-header__title');
+      for (const h of headings) {
+        if (/^\s*experience\s*$/i.test(h.textContent.trim())) {
+          section = h.closest('section') || h.closest('[class*="artdeco-card"]');
+          break;
+        }
+      }
+    }
+
+    if (!section) {
+      console.log('[Outreach] Experience section not found');
+      return null;
+    }
+
+    // Find list items within the experience section
+    const items = section.querySelectorAll('li[class*="artdeco-list__item"], li.pvs-list__paged-list-item, div[class*="pvs-entity"]');
+    if (items.length === 0) {
+      console.log('[Outreach] No experience items found');
+      return null;
+    }
+
+    // The first item is usually the current/most recent position
+    const firstItem = items[0];
+
+    // Strategy 1: Look for structured experience data
+    let title = '';
+    let company = '';
+    let tenureMonths = null;
+
+    // Look for role title — usually in a span with visually-hidden or in a specific div
+    const titleSelectors = [
+      'span[aria-hidden="true"]',
+      '.t-bold span',
+      '.mr1.t-bold span',
+      'a[data-field="experience_company_logo"] + div span[aria-hidden="true"]',
+    ];
+
+    // In grouped experience (multiple roles at same company), the company is the parent
+    // and individual roles are nested
+    const isGrouped = firstItem.querySelector('ul li');
+
+    if (isGrouped) {
+      // Grouped: Company name is at top level, roles are nested
+      const companySpan = firstItem.querySelector(':scope > div span[aria-hidden="true"], :scope > div a span[aria-hidden="true"]');
+      if (companySpan) {
+        company = companySpan.textContent.trim();
+      }
+
+      // Get the first (current) role from nested list
+      const firstRole = firstItem.querySelector('ul li');
+      if (firstRole) {
+        const roleSpans = firstRole.querySelectorAll('span[aria-hidden="true"]');
+        for (const sp of roleSpans) {
+          const text = sp.textContent.trim();
+          if (!text || text === company) continue;
+          // First non-company span is likely the title
+          if (!title && text.length > 1 && text.length < 120) {
+            title = text;
+            continue;
+          }
+          // Look for date range
+          if (/\d{4}/.test(text) && (/present/i.test(text) || /mo|yr/i.test(text))) {
+            tenureMonths = parseTenure(text);
+          }
+        }
+      }
+    } else {
+      // Non-grouped: title and company in same item
+      const allSpans = firstItem.querySelectorAll('span[aria-hidden="true"]');
+      const texts = [];
+      for (const sp of allSpans) {
+        const text = sp.textContent.trim();
+        if (text && text.length > 1) texts.push(text);
+      }
+
+      // Pattern: [Title, Company, "Full-time", "Date range - Duration", Location]
+      // or: [Title, "Company Name · Full-time", "Date range"]
+      if (texts.length >= 2) {
+        title = texts[0];
+
+        // Second item might be "Company · Employment Type" or just company
+        const companyText = texts[1];
+        company = companyText.split('·')[0].trim();
+
+        // Find date/tenure in remaining texts
+        for (let i = 2; i < texts.length; i++) {
+          if (/\d{4}/.test(texts[i]) || /mo|yr/i.test(texts[i])) {
+            tenureMonths = parseTenure(texts[i]);
+            if (tenureMonths !== null) break;
+          }
+        }
+      }
+    }
+
+    // Clean up
+    if (title && /^\d/.test(title)) title = ''; // If title starts with a number, it's probably not a title
+    if (company && /^\d/.test(company)) company = ''; // Same for company
+
+    // Filter out employment type strings mistakenly captured as title
+    const empTypes = /^(full[- ]?time|part[- ]?time|contract|freelance|internship|self[- ]?employed|seasonal|apprenticeship|hybrid|remote|on[- ]?site)$/i;
+    if (empTypes.test(title)) title = '';
+    if (empTypes.test(company)) company = '';
+
+    if (!title && !company) {
+      console.log('[Outreach] Experience parsing returned empty');
+      return null;
+    }
+
+    console.log('[Outreach] Experience extracted:', { title, company, tenureMonths });
+    return { title, company, tenureMonths };
+  }
+
   function extractProfileData() {
     const profileUrl = window.location.href.split('?')[0].replace(/\/$/, '');
 
-    // Name
+    // ── Name ──
     let fullName = '';
     const allH1 = document.querySelectorAll('h1');
     for (const h1 of allH1) {
@@ -63,7 +219,7 @@
       }
     }
 
-    // Headline — filter out junk like "Follow"
+    // ── Headline (fallback) ──
     let headline = '';
     for (const sel of ['div.text-body-medium', '[class*="text-body-medium"]']) {
       const el = document.querySelector(sel);
@@ -80,25 +236,24 @@
       if (parts.length >= 2) headline = parts[1].replace(/\s*\|\s*LinkedIn\s*$/, '').trim();
     }
 
-    // Company — filter out action words like "Follow", "Message", etc.
+    // ── Company from header (fallback) ──
     const JUNK_WORDS = /^(follow|message|connect|pending|subscribe|more|report|block)$/i;
-    let company = '';
+    let headerCompany = '';
     const companyLinks = document.querySelectorAll('a[href*="/company/"]');
     for (const link of companyLinks) {
-      // Try span inside the link first, then the link text itself
       const candidates = [link.querySelector('span'), link];
       for (const el of candidates) {
         if (!el) continue;
         const text = el.textContent.trim();
         if (text && text.length > 1 && text.length < 100 && !JUNK_WORDS.test(text)) {
-          company = text;
+          headerCompany = text;
           break;
         }
       }
-      if (company) break;
+      if (headerCompany) break;
     }
 
-    // Location
+    // ── Location ──
     let location = '';
     for (const sel of [
       'span.text-body-small.inline.t-black--light.break-words',
@@ -108,7 +263,32 @@
       if (el && el.textContent.trim()) { location = el.textContent.trim(); break; }
     }
 
-    return { linkedin_url: profileUrl, name: fullName, title: headline, company, location };
+    // ── Experience section (PRIMARY source for title, company, tenure) ──
+    const exp = extractFromExperience();
+
+    const title = exp?.title || headline || '';
+    const company = exp?.company || headerCompany || '';
+    const tenureMonths = exp?.tenureMonths || null;
+
+    // Determine data quality
+    let dataQuality = 'complete';
+    if (!title && !company) {
+      dataQuality = 'needs_enrichment';
+    } else if (!title || !company) {
+      dataQuality = 'partial';
+    }
+
+    console.log('[Outreach] Final profile data:', { fullName, title, company, location, tenureMonths, dataQuality });
+
+    return {
+      linkedin_url: profileUrl,
+      name: fullName,
+      title,
+      company,
+      location,
+      tenure_months: tenureMonths,
+      data_quality: dataQuality,
+    };
   }
 
   // ───────────────────────────
@@ -166,6 +346,15 @@
     return { label: d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }), cls: 'date-future' };
   }
 
+  function formatTenure(months) {
+    if (!months && months !== 0) return '';
+    if (months < 1) return '<1 mo';
+    if (months < 12) return `${months} mo`;
+    const yrs = Math.floor(months / 12);
+    const mo = months % 12;
+    return mo > 0 ? `${yrs} yr ${mo} mo` : `${yrs} yr`;
+  }
+
   // ───────────────────────────
   // Create Sidebar
   // ───────────────────────────
@@ -197,10 +386,12 @@
 
         <!-- Lead Info -->
         <div id="outreach-lead-info" style="display:none;">
-          <!-- Profile card with auto-update badge -->
+          <!-- Profile card -->
           <div class="profile-card">
             <div class="profile-name" id="lead-name"></div>
             <div class="profile-subtitle" id="lead-subtitle"></div>
+            <div class="profile-tenure" id="lead-tenure" style="display:none;"></div>
+            <div class="profile-quality" id="lead-quality-badge" style="display:none;"></div>
             <div class="profile-updated" id="lead-updated-badge" style="display:none;">
               ↻ Profile data refreshed
             </div>
@@ -418,21 +609,18 @@
   }
 
   /**
-   * Auto-update: If the page shows different data than what's stored,
-   * update the lead record. Includes sanity checks to avoid overwriting
-   * good data with bad extraction results.
+   * Auto-update: compare extracted data with stored data.
+   * Only overwrites if extracted value is clearly better (not garbage).
+   * Also updates tenure_months and data_quality.
    */
   async function autoUpdateLead(extracted, stored) {
     const changes = {};
 
-    // Sanity check: extracted value must be reasonable (not junk)
     function isValid(val, field) {
       if (!val || val.length < 2) return false;
       if (val.length > 200) return false;
-      // Reject common extraction garbage
       const junk = /^(follow|message|connect|pending|subscribe|more|report|block|loading|see more|view|null|undefined)$/i;
       if (junk.test(val)) return false;
-      // Name should have at least one space (first + last name)
       if (field === 'name' && !val.includes(' ') && val.length < 3) return false;
       return true;
     }
@@ -448,6 +636,17 @@
     }
     if (isValid(extracted.location, 'location') && extracted.location !== stored.location) {
       changes.location = extracted.location;
+    }
+    if (extracted.tenure_months !== null && extracted.tenure_months !== stored.tenure_months) {
+      changes.tenure_months = extracted.tenure_months;
+    }
+
+    // Upgrade data quality if we now have more data
+    const newTitle = changes.title || stored.title;
+    const newCompany = changes.company || stored.company;
+    const newQuality = (newTitle && newCompany) ? 'complete' : (!newTitle && !newCompany) ? 'needs_enrichment' : 'partial';
+    if (newQuality !== stored.data_quality) {
+      changes.data_quality = newQuality;
     }
 
     if (Object.keys(changes).length > 0) {
@@ -475,8 +674,32 @@
     showSection('outreach-lead-info');
 
     document.getElementById('lead-name').textContent = currentLead.name;
-    document.getElementById('lead-subtitle').textContent =
-      [currentLead.title, currentLead.company].filter(Boolean).join(' · ') || 'No details yet';
+
+    const subtitle = [currentLead.title, currentLead.company].filter(Boolean).join(' · ') || 'No details yet';
+    document.getElementById('lead-subtitle').textContent = subtitle;
+
+    // Tenure badge
+    const tenureEl = document.getElementById('lead-tenure');
+    if (currentLead.tenure_months) {
+      tenureEl.textContent = '⏱ ' + formatTenure(currentLead.tenure_months) + ' at current role';
+      tenureEl.style.display = 'block';
+    } else {
+      tenureEl.style.display = 'none';
+    }
+
+    // Data quality badge
+    const qualityEl = document.getElementById('lead-quality-badge');
+    if (currentLead.data_quality === 'partial') {
+      qualityEl.textContent = '⚠️ Partial data — visit profile to enrich';
+      qualityEl.className = 'profile-quality quality-partial';
+      qualityEl.style.display = 'block';
+    } else if (currentLead.data_quality === 'needs_enrichment') {
+      qualityEl.textContent = '🔍 Needs enrichment — no title/company found';
+      qualityEl.className = 'profile-quality quality-needs';
+      qualityEl.style.display = 'block';
+    } else {
+      qualityEl.style.display = 'none';
+    }
 
     renderPipeline();
     renderTasks();
@@ -509,23 +732,15 @@
     const open = currentTasks.filter(t => t.status === 'open');
     const done = currentTasks.filter(t => t.status === 'done');
     const overdue = open.filter(t => new Date(t.due_at) < new Date());
-    const today = open.filter(t => {
-      const d = relativeDate(t.due_at);
-      return d.label === 'Today';
-    });
+    const today = open.filter(t => relativeDate(t.due_at).label === 'Today');
     const upcoming = open.filter(t => {
       const d = relativeDate(t.due_at);
       return d.cls === 'date-tomorrow' || d.cls === 'date-upcoming' || d.cls === 'date-future';
     });
 
-    // Counts badges
     countsEl.innerHTML = '';
-    if (overdue.length > 0) {
-      countsEl.innerHTML += `<span class="count-badge overdue-badge">${overdue.length} overdue</span>`;
-    }
-    if (open.length > 0) {
-      countsEl.innerHTML += `<span class="count-badge open-badge">${open.length} open</span>`;
-    }
+    if (overdue.length > 0) countsEl.innerHTML += `<span class="count-badge overdue-badge">${overdue.length} overdue</span>`;
+    if (open.length > 0) countsEl.innerHTML += `<span class="count-badge open-badge">${open.length} open</span>`;
 
     if (currentTasks.length === 0) {
       container.innerHTML = `
@@ -539,40 +754,29 @@
 
     let html = '';
 
-    // Overdue group
     if (overdue.length > 0) {
       html += `<div class="task-group">
-        <div class="task-group-header overdue-header">
-          <span class="pulse-dot"></span> Overdue (${overdue.length})
-        </div>
-        ${overdue.sort((a, b) => new Date(a.due_at) - new Date(b.due_at)).map(t => renderTaskItem(t)).join('')}
+        <div class="task-group-header overdue-header"><span class="pulse-dot"></span> Overdue (${overdue.length})</div>
+        ${overdue.sort((a, b) => new Date(a.due_at) - new Date(b.due_at)).map(renderTaskItem).join('')}
       </div>`;
     }
-
-    // Today group
     if (today.length > 0) {
       html += `<div class="task-group">
         <div class="task-group-header today-header">📌 Today (${today.length})</div>
-        ${today.map(t => renderTaskItem(t)).join('')}
+        ${today.map(renderTaskItem).join('')}
       </div>`;
     }
-
-    // Upcoming group
     if (upcoming.length > 0) {
       html += `<div class="task-group">
         <div class="task-group-header">📅 Upcoming (${upcoming.length})</div>
-        ${upcoming.sort((a, b) => new Date(a.due_at) - new Date(b.due_at)).map(t => renderTaskItem(t)).join('')}
+        ${upcoming.sort((a, b) => new Date(a.due_at) - new Date(b.due_at)).map(renderTaskItem).join('')}
       </div>`;
     }
-
-    // Done group (collapsed)
     if (done.length > 0) {
       html += `<div class="task-group done-group">
-        <div class="task-group-header done-header" id="toggle-done">
-          ✅ Done (${done.length}) <span class="toggle-arrow">▸</span>
-        </div>
+        <div class="task-group-header done-header" id="toggle-done">✅ Done (${done.length}) <span class="toggle-arrow">▸</span></div>
         <div class="done-list" id="done-list" style="display:none;">
-          ${done.slice(0, 10).map(t => renderTaskItem(t)).join('')}
+          ${done.slice(0, 10).map(renderTaskItem).join('')}
           ${done.length > 10 ? `<div class="tasks-more">+${done.length - 10} more</div>` : ''}
         </div>
       </div>`;
@@ -580,7 +784,6 @@
 
     container.innerHTML = html;
 
-    // Toggle done section
     const toggleDone = container.querySelector('#toggle-done');
     if (toggleDone) {
       toggleDone.addEventListener('click', () => {
@@ -592,7 +795,6 @@
       });
     }
 
-    // Task action listeners
     container.querySelectorAll('.task-check').forEach(btn => {
       btn.addEventListener('click', () => toggleTask(btn.dataset.id, btn.dataset.to));
     });
@@ -684,7 +886,6 @@
 
     section.style.display = 'block';
 
-    // Sort newest first
     const sorted = [...currentEvents].sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
     container.innerHTML = sorted.map(ev => {

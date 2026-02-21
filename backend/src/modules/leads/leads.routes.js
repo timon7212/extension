@@ -6,11 +6,11 @@ const router = express.Router();
 
 /**
  * GET /api/leads
- * Query: ?stage=&owner=&campaign=&search=&page=1&limit=50
+ * Query: ?stage=&owner=&campaign=&search=&quality=&page=1&limit=50
  */
 router.get('/', authenticateOrApiKey, async (req, res) => {
   try {
-    const { stage, owner, campaign, search, page = 1, limit = 50 } = req.query;
+    const { stage, owner, campaign, search, quality, page = 1, limit = 50 } = req.query;
     const conditions = [];
     const params = [];
     let idx = 1;
@@ -26,6 +26,10 @@ router.get('/', authenticateOrApiKey, async (req, res) => {
     if (campaign) {
       conditions.push(`l.campaign_tag = $${idx++}`);
       params.push(campaign);
+    }
+    if (quality) {
+      conditions.push(`l.data_quality = $${idx++}`);
+      params.push(quality);
     }
     if (search) {
       conditions.push(`(l.name ILIKE $${idx} OR l.company ILIKE $${idx} OR l.title ILIKE $${idx})`);
@@ -83,13 +87,13 @@ router.get('/by-url', authenticate, async (req, res) => {
       return res.json({ lead: null });
     }
 
-    // Also fetch tasks
+    // Fetch tasks
     const tasks = await db.query(
       `SELECT * FROM tasks WHERE lead_id = $1 ORDER BY due_at ASC`,
       [rows[0].id]
     );
 
-    // Also fetch events (activity history)
+    // Fetch events (activity history)
     const events = await db.query(
       `SELECT ev.*, e.name AS employee_name
        FROM events ev
@@ -108,20 +112,23 @@ router.get('/by-url', authenticate, async (req, res) => {
 
 /**
  * POST /api/leads
- * Body: { linkedin_url, name, title, company, location, campaign_tag }
+ * Body: { linkedin_url, name, title, company, location, campaign_tag, tenure_months, data_quality }
  */
 router.post('/', authenticate, async (req, res) => {
   try {
-    const { linkedin_url, name, title, company, location, campaign_tag } = req.body;
+    const { linkedin_url, name, title, company, location, campaign_tag, tenure_months, data_quality } = req.body;
     if (!linkedin_url || !name) {
       return res.status(400).json({ error: 'linkedin_url and name required' });
     }
 
+    // Determine data quality automatically if not provided
+    const quality = data_quality || (title && company ? 'complete' : 'partial');
+
     const { rows } = await db.query(
-      `INSERT INTO leads (linkedin_url, name, title, company, location, campaign_tag, owner_employee_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO leads (linkedin_url, name, title, company, location, campaign_tag, tenure_months, data_quality, owner_employee_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING *`,
-      [linkedin_url, name, title || null, company || null, location || null, campaign_tag || null, req.employee.id]
+      [linkedin_url, name, title || null, company || null, location || null, campaign_tag || null, tenure_months || null, quality, req.employee.id]
     );
 
     res.status(201).json({ lead: rows[0] });
@@ -136,8 +143,8 @@ router.post('/', authenticate, async (req, res) => {
 
 /**
  * POST /api/leads/bulk
- * Body: { leads: [{ linkedin_url, name, title?, company?, location? }] }
- * Bulk import leads (skips duplicates).
+ * Body: { leads: [{ linkedin_url, name, title?, company?, location?, tenure_months?, data_quality? }] }
+ * Bulk import leads (UPSERT — updates on re-scan).
  */
 router.post('/bulk', authenticate, async (req, res) => {
   try {
@@ -155,17 +162,28 @@ router.post('/bulk', authenticate, async (req, res) => {
         skipped++;
         continue;
       }
+
+      // Auto-determine quality
+      const quality = lead.data_quality || (lead.title && lead.company ? 'complete' : 'partial');
+
       try {
         const { rows } = await db.query(
-          `INSERT INTO leads (linkedin_url, name, title, company, location, stage, owner_employee_id)
-           VALUES ($1, $2, $3, $4, $5, 'Connected', $6)
+          `INSERT INTO leads (linkedin_url, name, title, company, location, tenure_months, data_quality, stage, owner_employee_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, 'Connected', $8)
            ON CONFLICT (linkedin_url) DO UPDATE SET
              name = COALESCE(NULLIF(EXCLUDED.name, ''), leads.name),
              title = COALESCE(NULLIF(EXCLUDED.title, ''), leads.title),
              company = COALESCE(NULLIF(EXCLUDED.company, ''), leads.company),
-             location = COALESCE(NULLIF(EXCLUDED.location, ''), leads.location)
+             location = COALESCE(NULLIF(EXCLUDED.location, ''), leads.location),
+             tenure_months = COALESCE(EXCLUDED.tenure_months, leads.tenure_months),
+             data_quality = CASE
+               WHEN EXCLUDED.title IS NOT NULL AND EXCLUDED.company IS NOT NULL THEN 'complete'
+               WHEN leads.title IS NOT NULL AND leads.company IS NOT NULL THEN leads.data_quality
+               ELSE 'partial'
+             END,
+             updated_at = NOW()
            RETURNING (xmax = 0) AS is_new`,
-          [lead.linkedin_url, lead.name, lead.title || null, lead.company || null, lead.location || null, req.employee.id]
+          [lead.linkedin_url, lead.name, lead.title || null, lead.company || null, lead.location || null, lead.tenure_months || null, quality, req.employee.id]
         );
         if (rows[0]?.is_new) created++;
         else updated++;
@@ -187,7 +205,7 @@ router.post('/bulk', authenticate, async (req, res) => {
 router.patch('/:id', authenticate, async (req, res) => {
   try {
     const { id } = req.params;
-    const allowed = ['name', 'title', 'company', 'location', 'campaign_tag', 'stage'];
+    const allowed = ['name', 'title', 'company', 'location', 'campaign_tag', 'stage', 'tenure_months', 'data_quality'];
     const updates = [];
     const params = [];
     let idx = 1;
@@ -204,6 +222,15 @@ router.patch('/:id', authenticate, async (req, res) => {
     }
 
     updates.push(`updated_at = NOW()`);
+
+    // Auto-upgrade data_quality to 'complete' if title+company now present
+    // (unless explicitly being set)
+    if (!req.body.data_quality && (req.body.title || req.body.company)) {
+      updates.push(`data_quality = CASE WHEN COALESCE($${idx}, title) IS NOT NULL AND COALESCE($${idx + 1}, company) IS NOT NULL THEN 'complete' ELSE data_quality END`);
+      params.push(req.body.title || null, req.body.company || null);
+      idx += 2;
+    }
+
     params.push(id);
     const { rows } = await db.query(
       `UPDATE leads SET ${updates.join(', ')} WHERE id = $${idx} RETURNING *`,

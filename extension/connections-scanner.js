@@ -1,18 +1,14 @@
 /**
  * Connections Scanner — injected on LinkedIn Connections / My Network pages.
  *
- * CPO/CTO Flow:
+ * v3 Flow:
  *   1. Employee opens Connections page
  *   2. Panel appears → "Start Scan"
- *   3. Auto-scrolls, extracts each connection card separately
- *   4. Sends batches to POST /api/leads/bulk (UPSERT — updates on re-scan)
+ *   3. Auto-scrolls, extracts each connection card
+ *   4. Sends batches to POST /api/leads/bulk (UPSERT)
  *   5. Stage = "Connected" for new leads
- *
- * Parsing strategy (robust against LinkedIn DOM changes):
- *   - Each connection card is an <li> in the list
- *   - Name: span[aria-hidden="true"] inside profile link, OR dedicated name element
- *   - Title: separate element with "occupation" or similar class
- *   - NEVER use link.textContent as fallback (causes name+title concatenation)
+ *   6. If data is unclear (no title/company visible), sends with data_quality = 'partial'
+ *      → will be enriched automatically when employee visits their profile later
  */
 
 (function () {
@@ -63,13 +59,9 @@
   let totalSkipped = 0;
 
   // ───────────────────────────
-  // NAME EXTRACTION — the critical fix
+  // NAME EXTRACTION — robust multi-strategy
   // ───────────────────────────
 
-  /**
-   * Get only the direct text content of an element, ignoring child elements.
-   * This prevents grabbing "NameOccupation" from nested spans.
-   */
   function getDirectTextOnly(element) {
     let text = '';
     for (const node of element.childNodes) {
@@ -80,19 +72,12 @@
     return text.trim();
   }
 
-  /**
-   * Attempt to find the name element within a profile link or card.
-   * Returns { name, nameElement } or null.
-   */
   function extractNameFromCard(link, card) {
     // Strategy 1: span[aria-hidden="true"] inside the link
-    // LinkedIn uses this for accessibility — it contains ONLY the name
     const ariaSpan = link.querySelector('span[aria-hidden="true"]');
     if (ariaSpan) {
       const text = getDirectTextOnly(ariaSpan) || ariaSpan.textContent.trim();
-      if (text && text.length > 1 && text.length < 60) {
-        return text;
-      }
+      if (text && text.length > 1 && text.length < 60) return text;
     }
 
     // Strategy 2: Element with "name" in its class
@@ -112,30 +97,27 @@
       }
     }
 
-    // Strategy 3: First visually-hidden span (screen reader text, clean name)
+    // Strategy 3: visually-hidden span
     const visuallyHidden = link.querySelector('.visually-hidden');
     if (visuallyHidden) {
       const text = visuallyHidden.textContent.trim();
       if (text && text.length > 1 && text.length < 60) return text;
     }
 
-    // Strategy 4: Direct text of the link itself (NOT textContent — just text nodes)
+    // Strategy 4: Direct text of the link
     const directText = getDirectTextOnly(link);
-    if (directText && directText.length > 1 && directText.length < 60) {
-      return directText;
-    }
+    if (directText && directText.length > 1 && directText.length < 60) return directText;
 
-    // Strategy 5: If link has only ONE span child, use that
+    // Strategy 5: If link has only ONE span child
     const spans = link.querySelectorAll('span');
     if (spans.length === 1) {
       const text = spans[0].textContent.trim();
       if (text && text.length > 1 && text.length < 60) return text;
     }
 
-    // Strategy 6 (LAST RESORT): link.textContent but try to clean it
+    // Strategy 6: link.textContent (last resort, try to clean)
     const fullText = link.textContent.trim();
     if (fullText && fullText.length > 1) {
-      // Try to detect name+title concatenation by looking for common title patterns
       const cleaned = cleanNameFromConcatenated(fullText);
       if (cleaned && cleaned.length > 1 && cleaned.length < 60) return cleaned;
     }
@@ -143,14 +125,9 @@
     return null;
   }
 
-  /**
-   * If we got a concatenated "NameTitle" string, try to split it.
-   * Looks for transition point where name ends and title begins.
-   */
   function cleanNameFromConcatenated(text) {
     if (!text) return text;
 
-    // Common patterns where title starts (case-insensitive match)
     const titlePatterns = [
       /^(.{2,40}?)((?:CEO|CTO|CPO|COO|CFO|CMO|VP|SVP|EVP)\b.*)$/i,
       /^(.{2,40}?)((?:Co-?[Ff]ounder|Founder|Director|Manager|Engineer|Developer|Designer|Analyst|Consultant|Executive|President|Partner|Head of|Chief)\b.*)$/i,
@@ -160,13 +137,9 @@
 
     for (const pattern of titlePatterns) {
       const match = text.match(pattern);
-      if (match && match[1].trim().length >= 2) {
-        return match[1].trim();
-      }
+      if (match && match[1].trim().length >= 2) return match[1].trim();
     }
 
-    // If text has no spaces and is long (like "AdilbeckKamash") — probably OK, it's just a name
-    // If text has newlines, take first line
     if (text.includes('\n')) {
       const firstLine = text.split('\n')[0].trim();
       if (firstLine.length > 1) return firstLine;
@@ -176,7 +149,8 @@
   }
 
   /**
-   * Extract headline/occupation from card, explicitly NOT from the profile link.
+   * Extract headline/occupation from card — NOT from inside the profile link.
+   * Returns empty string if unclear (better to skip than to write garbage).
    */
   function extractOccupationFromCard(card, name) {
     if (!card) return '';
@@ -200,13 +174,10 @@
       }
     }
 
-    // Fallback: look for text elements that are NOT the name element
-    // and NOT action buttons
+    // Fallback: look for text elements NOT in name link and NOT buttons
     const candidates = card.querySelectorAll('span, p, div');
     for (const el of candidates) {
-      // Skip if it's inside the link (that's the name area)
       if (el.closest('a[href*="/in/"]')) continue;
-      // Skip buttons
       if (el.closest('button')) continue;
 
       const text = el.textContent.trim().replace(/\s+/g, ' ');
@@ -219,6 +190,7 @@
       }
     }
 
+    // Return empty — it's OK, data will be enriched when visiting profile
     return '';
   }
 
@@ -226,46 +198,52 @@
   // Extract connections from visible DOM
   // ───────────────────────────
   function extractConnections() {
-    // Find all list items that contain profile links
     const cards = document.querySelectorAll('li');
 
     for (const card of cards) {
-      // Find profile link in this card
       const link = card.querySelector('a[href*="/in/"]');
       if (!link) continue;
 
       const href = link.getAttribute('href');
       if (!href || !href.includes('/in/')) continue;
 
-      // Build clean URL
       let cleanUrl = href.split('?')[0].replace(/\/$/, '');
       if (!cleanUrl.startsWith('http')) {
         cleanUrl = 'https://www.linkedin.com' + cleanUrl;
       }
 
-      // Skip if already collected
       if (collectedLeads.has(cleanUrl)) continue;
 
-      // Extract name using robust strategy
       const name = extractNameFromCard(link, card);
       if (!name || name.length < 2 || name === 'LinkedIn Member') continue;
 
-      // Extract occupation (NOT from inside the link!)
+      // Extract headline — if unclear, leave empty (will be enriched later)
       const headline = extractOccupationFromCard(card, name);
 
-      // Parse company from headline
+      // Parse company from headline if possible
       let company = '';
+      let title = '';
       if (headline) {
         const atMatch = headline.match(/(?:\bat\b|\b@\b)\s+(.+)/i);
-        if (atMatch) company = atMatch[1].trim();
+        if (atMatch) {
+          company = atMatch[1].trim();
+          title = headline.replace(/(?:\bat\b|\b@\b)\s+.+/i, '').trim();
+        } else {
+          title = headline;
+        }
       }
+
+      // Determine data quality
+      const dataQuality = (title && company) ? 'complete' : (title || company) ? 'partial' : 'partial';
 
       collectedLeads.set(cleanUrl, {
         linkedin_url: cleanUrl,
         name: name.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim(),
-        title: headline ? headline.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim() : null,
+        title: title || null,
         company: company || null,
         location: null,
+        tenure_months: null,
+        data_quality: dataQuality,
       });
     }
   }
@@ -310,7 +288,7 @@
 
         <div class="conn-status" id="conn-status">
           Scan your connections to import them as leads.<br>
-          <small style="color:#999;">Re-scanning updates existing records.</small>
+          <small style="color:#999;">Incomplete profiles will be enriched when you visit them later.</small>
         </div>
 
         <button class="conn-btn conn-btn-primary" id="conn-action-btn">
@@ -421,8 +399,14 @@
 
     isScanning = false;
     setProgress(100);
-    setStatus(`✅ Done! ${totalCreated} new, ${totalUpdated} updated.`);
-    log(`🎉 Complete: ${collectedLeads.size} found, ${totalCreated} created, ${totalUpdated} updated`);
+
+    const partialCount = Array.from(collectedLeads.values()).filter(l => !l.title || !l.company).length;
+    let statusMsg = `✅ Done! ${totalCreated} new, ${totalUpdated} updated.`;
+    if (partialCount > 0) {
+      statusMsg += `<br><small style="color:#e65100;">⚠️ ${partialCount} leads have partial data — visit their profiles to enrich.</small>`;
+    }
+    setStatus(statusMsg);
+    log(`🎉 Complete: ${collectedLeads.size} found, ${totalCreated} created, ${totalUpdated} updated, ${partialCount} partial`);
 
     btn.textContent = '🔄 Scan Again';
     btn.className = 'conn-btn conn-btn-primary';
