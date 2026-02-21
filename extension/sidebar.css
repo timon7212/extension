@@ -204,6 +204,23 @@
 .outreach-btn-meeting:hover { background: #f8bbd0; }
 .outreach-btn-create:hover { background: #0857a6; }
 
+/* Profile name */
+.outreach-profile-name {
+  font-size: 15px;
+  font-weight: 700;
+  margin-bottom: 14px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #eee;
+}
+
+/* Status messages */
+.outreach-status-msg {
+  text-align: center;
+  color: #888;
+  padding: 30px 0;
+  font-size: 13px;
+}
+
 /* Auth required */
 #outreach-auth-required p {
   text-align: center;
@@ -211,12 +228,8 @@
   padding: 30px 0;
 }
 
-#outreach-new-lead {
-  text-align: center;
-  padding: 20px 0;
-}
-
-#outreach-new-lead p {
-  color: #888;
-  margin-bottom: 12px;
+/* Error */
+#outreach-error {
+  color: #c62828;
+  font-size: 12px;
 }
