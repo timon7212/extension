@@ -1,4 +1,9 @@
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001/api';
+// Server-side (SSR in Docker): use internal Docker network URL
+// Client-side (browser): use relative /api which goes through Nginx
+const API_BASE =
+  process.env.INTERNAL_API_URL ||          // server-side: http://backend:3001/api
+  process.env.NEXT_PUBLIC_API_URL ||       // client-side: /api
+  'http://localhost:3001/api';             // local dev fallback
 
 /**
  * Fetch wrapper for backend API.
