@@ -63,22 +63,39 @@
       }
     }
 
-    // Headline
+    // Headline — filter out junk like "Follow"
     let headline = '';
     for (const sel of ['div.text-body-medium', '[class*="text-body-medium"]']) {
       const el = document.querySelector(sel);
-      if (el && el.textContent.trim()) { headline = el.textContent.trim(); break; }
+      if (el) {
+        const text = el.textContent.trim();
+        if (text && text.length > 1 && !/^(follow|message|connect|pending)$/i.test(text)) {
+          headline = text;
+          break;
+        }
+      }
     }
     if (!headline && document.title) {
       const parts = document.title.split(/\s*[-–]\s*/);
       if (parts.length >= 2) headline = parts[1].replace(/\s*\|\s*LinkedIn\s*$/, '').trim();
     }
 
-    // Company
+    // Company — filter out action words like "Follow", "Message", etc.
+    const JUNK_WORDS = /^(follow|message|connect|pending|subscribe|more|report|block)$/i;
     let company = '';
-    for (const sel of ['a[href*="/company/"] span', 'a[href*="/company/"]']) {
-      const el = document.querySelector(sel);
-      if (el && el.textContent.trim()) { company = el.textContent.trim(); break; }
+    const companyLinks = document.querySelectorAll('a[href*="/company/"]');
+    for (const link of companyLinks) {
+      // Try span inside the link first, then the link text itself
+      const candidates = [link.querySelector('span'), link];
+      for (const el of candidates) {
+        if (!el) continue;
+        const text = el.textContent.trim();
+        if (text && text.length > 1 && text.length < 100 && !JUNK_WORDS.test(text)) {
+          company = text;
+          break;
+        }
+      }
+      if (company) break;
     }
 
     // Location
