@@ -22,24 +22,74 @@
   function extractProfileData() {
     const profileUrl = window.location.href.split('?')[0].replace(/\/$/, '');
 
-    const nameEl = document.querySelector('h1.text-heading-xlarge');
-    const fullName = nameEl ? nameEl.textContent.trim() : '';
+    // Name — try multiple selectors (LinkedIn changes classes frequently)
+    const nameSelectors = [
+      'h1.text-heading-xlarge',
+      'h1[class*="text-heading"]',
+      '.pv-text-details__left-panel h1',
+      '.ph5 h1',
+      'main h1',
+      'h1',
+    ];
+    let fullName = '';
+    for (const sel of nameSelectors) {
+      const el = document.querySelector(sel);
+      if (el && el.textContent.trim()) {
+        fullName = el.textContent.trim();
+        break;
+      }
+    }
 
-    const headlineEl = document.querySelector('div.text-body-medium');
-    const headline = headlineEl ? headlineEl.textContent.trim() : '';
+    // Headline / Title
+    const headlineSelectors = [
+      'div.text-body-medium',
+      '.pv-text-details__left-panel div[class*="text-body-medium"]',
+      '.ph5 .text-body-medium',
+      'main section div.text-body-medium',
+    ];
+    let headline = '';
+    for (const sel of headlineSelectors) {
+      const el = document.querySelector(sel);
+      if (el && el.textContent.trim()) {
+        headline = el.textContent.trim();
+        break;
+      }
+    }
 
-    // Company — try experience section first, fallback to headline
+    // Company — try experience section first, fallback to headline parsing
     let company = '';
-    const expCompanyEl = document.querySelector(
-      'div.pv-text-details__right-panel .inline-show-more-text'
-    );
-    if (expCompanyEl) {
-      company = expCompanyEl.textContent.trim();
+    const companySelectors = [
+      'div.pv-text-details__right-panel .inline-show-more-text',
+      'div.pv-text-details__right-panel a[href*="company"]',
+      'ul.pv-text-details__right-panel li:first-child',
+      'a[href*="/company/"] div',
+      '.experience-item a[href*="company"]',
+    ];
+    for (const sel of companySelectors) {
+      const el = document.querySelector(sel);
+      if (el && el.textContent.trim()) {
+        company = el.textContent.trim();
+        break;
+      }
     }
 
     // Location
-    const locationEl = document.querySelector('span.text-body-small.inline.t-black--light.break-words');
-    const location = locationEl ? locationEl.textContent.trim() : '';
+    const locationSelectors = [
+      'span.text-body-small.inline.t-black--light.break-words',
+      '.pv-text-details__left-panel span[class*="text-body-small"]',
+      '.ph5 span.text-body-small',
+      'main section span.text-body-small',
+    ];
+    let location = '';
+    for (const sel of locationSelectors) {
+      const el = document.querySelector(sel);
+      if (el && el.textContent.trim()) {
+        location = el.textContent.trim();
+        break;
+      }
+    }
+
+    console.log('[Outreach] Extracted profile:', { profileUrl, fullName, headline, company, location });
 
     return {
       linkedin_url: profileUrl,
