@@ -8,7 +8,7 @@ const router = express.Router();
  * GET /api/leads
  * Query: ?stage=&owner=&campaign=&page=1&limit=50
  */
-router.get('/', authenticate, async (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const { stage, owner, campaign, page = 1, limit = 50 } = req.query;
     const conditions = [];
@@ -115,6 +115,46 @@ router.post('/', authenticate, async (req, res) => {
       return res.status(409).json({ error: 'Lead with this LinkedIn URL already exists' });
     }
     console.error('Create lead error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
+ * POST /api/leads/bulk
+ * Body: { leads: [{ linkedin_url, name, title?, company?, location? }] }
+ * Bulk import leads (skips duplicates).
+ */
+router.post('/bulk', authenticate, async (req, res) => {
+  try {
+    const { leads } = req.body;
+    if (!Array.isArray(leads) || leads.length === 0) {
+      return res.status(400).json({ error: 'leads array required' });
+    }
+
+    let created = 0;
+    let skipped = 0;
+
+    for (const lead of leads) {
+      if (!lead.linkedin_url || !lead.name) {
+        skipped++;
+        continue;
+      }
+      try {
+        await db.query(
+          `INSERT INTO leads (linkedin_url, name, title, company, location, stage, owner_employee_id)
+           VALUES ($1, $2, $3, $4, $5, 'Connected', $6)
+           ON CONFLICT (linkedin_url) DO NOTHING`,
+          [lead.linkedin_url, lead.name, lead.title || null, lead.company || null, lead.location || null, req.employee.id]
+        );
+        created++;
+      } catch {
+        skipped++;
+      }
+    }
+
+    res.status(201).json({ created, skipped, total: leads.length });
+  } catch (err) {
+    console.error('Bulk import error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 });

@@ -1,12 +1,12 @@
 /**
  * Content Script — injected on LinkedIn profile pages.
  *
- * Flow:
- *   1. User opens a LinkedIn profile
- *   2. Sidebar appears, extracts profile data
- *   3. If lead doesn't exist → AUTO-CREATES it
- *   4. Shows lead stage + action buttons
- *   5. Clicking a button records an event and advances the stage
+ * As a CPO-level experience:
+ *   1. Auto-creates lead on profile visit
+ *   2. Shows current stage in a pipeline visualizer
+ *   3. Quick-select task presets + custom tasks
+ *   4. One-click stage transitions
+ *   5. Toggle task completion right from sidebar
  *
  * All API calls go through background.js service worker.
  */
@@ -14,19 +14,26 @@
 (function () {
   'use strict';
 
-  // Prevent double injection
   if (document.getElementById('outreach-sidebar')) return;
 
-  // ===========================
+  // ───────────────────────────
+  // Quick task presets (CPO: most common outreach tasks)
+  // ───────────────────────────
+  const TASK_PRESETS = [
+    { emoji: '📞', label: 'Follow up' },
+    { emoji: '💬', label: 'Send message' },
+    { emoji: '📅', label: 'Schedule call' },
+    { emoji: '📝', label: 'Research' },
+    { emoji: '🔔', label: 'Check reply' },
+  ];
+
+  // ───────────────────────────
   // Profile data extraction
-  // ===========================
+  // ───────────────────────────
   function extractProfileData() {
     const profileUrl = window.location.href.split('?')[0].replace(/\/$/, '');
 
-    // ── Name: try h1, then page title, then og:title ──
     let fullName = '';
-
-    // Strategy 1: h1 elements
     const allH1 = document.querySelectorAll('h1');
     for (const h1 of allH1) {
       const text = h1.textContent.trim();
@@ -35,14 +42,10 @@
         break;
       }
     }
-
-    // Strategy 2: page title  "Name - Title | LinkedIn"
     if (!fullName && document.title) {
       const m = document.title.match(/^(.+?)\s*[-–|]/);
       if (m && m[1].trim().length > 1) fullName = m[1].trim();
     }
-
-    // Strategy 3: og:title meta
     if (!fullName) {
       const og = document.querySelector('meta[property="og:title"]');
       if (og && og.content) {
@@ -51,7 +54,6 @@
       }
     }
 
-    // ── Headline ──
     let headline = '';
     for (const sel of ['div.text-body-medium', '[class*="text-body-medium"]']) {
       const el = document.querySelector(sel);
@@ -62,14 +64,12 @@
       if (parts.length >= 2) headline = parts[1].replace(/\s*\|\s*LinkedIn\s*$/, '').trim();
     }
 
-    // ── Company ──
     let company = '';
     for (const sel of ['a[href*="/company/"] span', 'a[href*="/company/"]']) {
       const el = document.querySelector(sel);
       if (el && el.textContent.trim()) { company = el.textContent.trim(); break; }
     }
 
-    // ── Location ──
     let location = '';
     for (const sel of [
       'span.text-body-small.inline.t-black--light.break-words',
@@ -82,21 +82,17 @@
     return { linkedin_url: profileUrl, name: fullName, title: headline, company, location };
   }
 
-  // ===========================
-  // API helper (via background service worker)
-  // ===========================
+  // ───────────────────────────
+  // API helper
+  // ───────────────────────────
   function api(method, path, body) {
     return new Promise((resolve, reject) => {
       chrome.runtime.sendMessage(
         { action: 'apiRequest', method, path, body },
         (response) => {
-          if (chrome.runtime.lastError) {
-            reject(new Error(chrome.runtime.lastError.message));
-          } else if (response && response.error) {
-            reject(new Error(response.error));
-          } else {
-            resolve(response);
-          }
+          if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
+          if (response && response.error) return reject(new Error(response.error));
+          resolve(response);
         }
       );
     });
@@ -110,15 +106,32 @@
     });
   }
 
-  // ===========================
-  // Sidebar UI
-  // ===========================
+  // ───────────────────────────
+  // State
+  // ───────────────────────────
   let currentLead = null;
   let currentTasks = [];
 
+  const STAGES = ['New', 'Invited', 'Connected', 'Messaged', 'Replied', 'Meeting'];
+  const EVENT_FOR_STAGE = {
+    Invited: 'invite_sent',
+    Connected: 'connected',
+    Messaged: 'message_sent',
+    Replied: 'reply_received',
+    Meeting: 'meeting_booked',
+  };
+
+  // ───────────────────────────
+  // Create Sidebar
+  // ───────────────────────────
   function createSidebar() {
     const sidebar = document.createElement('div');
     sidebar.id = 'outreach-sidebar';
+
+    // Build task preset chips HTML
+    const presetsHtml = TASK_PRESETS
+      .map(p => `<button class="outreach-preset-chip" data-label="${p.label}">${p.emoji} ${p.label}</button>`)
+      .join('');
 
     sidebar.innerHTML = `
       <div class="outreach-sidebar-header">
@@ -126,135 +139,183 @@
         <button id="outreach-toggle" title="Collapse">◀</button>
       </div>
       <div id="outreach-content">
-        <div id="outreach-loading" class="outreach-status-msg">⏳ Loading...</div>
-        <div id="outreach-auth-required" style="display:none;">
-          <p>⚙️ Log in via the extension icon first</p>
+        <!-- Loading -->
+        <div id="outreach-loading" class="outreach-center-msg">
+          <div class="outreach-spinner"></div>
+          <p>Loading...</p>
         </div>
+
+        <!-- Auth required -->
+        <div id="outreach-auth-required" style="display:none;" class="outreach-center-msg">
+          <div style="font-size:32px; margin-bottom:8px;">🔒</div>
+          <p>Log in via the extension popup first</p>
+        </div>
+
+        <!-- Lead Info -->
         <div id="outreach-lead-info" style="display:none;">
-          <div class="outreach-profile-name" id="outreach-lead-name"></div>
-          <div class="outreach-section">
-            <div class="outreach-label">STAGE</div>
-            <div id="outreach-stage" class="outreach-value outreach-badge">—</div>
+          <!-- Name + company -->
+          <div class="outreach-profile-card">
+            <div class="outreach-profile-name" id="outreach-lead-name"></div>
+            <div class="outreach-profile-subtitle" id="outreach-lead-subtitle"></div>
           </div>
-          <div id="outreach-connection-hint" class="outreach-hint" style="display:none;">
-            💡 "Message" button detected — might already be connected
-          </div>
+
+          <!-- Pipeline mini-visualizer -->
+          <div class="outreach-pipeline" id="outreach-pipeline"></div>
+
+          <!-- Tasks -->
           <div class="outreach-section">
-            <div class="outreach-label">TASKS</div>
+            <div class="outreach-section-header">
+              <span class="outreach-label">📋 Tasks</span>
+              <span class="outreach-task-count" id="outreach-task-count">0</span>
+            </div>
             <div id="outreach-tasks" class="outreach-tasks-list"></div>
+
+            <!-- Quick task presets -->
+            <div class="outreach-presets">${presetsHtml}</div>
+
+            <!-- Custom task form -->
+            <div class="outreach-add-task-form">
+              <div class="outreach-add-task-row">
+                <input type="text" id="outreach-task-type" placeholder="Custom task..." class="outreach-task-input" />
+                <input type="date" id="outreach-task-due" class="outreach-task-date" />
+                <button id="outreach-add-task-btn" class="outreach-btn-add" title="Add task">+</button>
+              </div>
+            </div>
           </div>
-          <div class="outreach-actions">
-            <button class="outreach-btn outreach-btn-invite" data-event="invite_sent">
-              📩 Invite Sent
-            </button>
-            <button class="outreach-btn outreach-btn-connected" data-event="connected">
-              🤝 Connected
-            </button>
-            <button class="outreach-btn outreach-btn-message" data-event="message_sent">
-              💬 Message Sent
-            </button>
-            <button class="outreach-btn outreach-btn-reply" data-event="reply_received">
-              📨 Reply Received
-            </button>
-            <button class="outreach-btn outreach-btn-meeting" data-event="meeting_booked">
-              📅 Meeting Booked
-            </button>
+
+          <!-- Stage Actions -->
+          <div class="outreach-section">
+            <div class="outreach-label">⚡ Actions</div>
+            <div class="outreach-actions" id="outreach-actions"></div>
           </div>
         </div>
-        <div id="outreach-error" style="display:none;" class="outreach-status-msg"></div>
+
+        <!-- Error -->
+        <div id="outreach-error" style="display:none;" class="outreach-center-msg"></div>
       </div>
     `;
 
     document.body.appendChild(sidebar);
 
-    // Toggle sidebar
+    // Toggle
     document.getElementById('outreach-toggle').addEventListener('click', () => {
       sidebar.classList.toggle('collapsed');
       document.getElementById('outreach-toggle').textContent =
         sidebar.classList.contains('collapsed') ? '▶' : '◀';
     });
 
-    // Action buttons
-    document.querySelectorAll('.outreach-btn[data-event]').forEach((btn) => {
-      btn.addEventListener('click', async () => {
-        if (!currentLead) return;
-        const eventType = btn.dataset.event;
-        btn.disabled = true;
-        btn.textContent = '⏳...';
-        try {
-          await api('POST', '/events', {
-            lead_id: currentLead.id,
-            type: eventType,
-          });
-          showNotification('Event recorded ✓', 'success');
-          await loadLeadData();
-        } catch (err) {
-          showNotification('Error: ' + err.message, 'error');
-        } finally {
-          btn.disabled = false;
-          resetButtonLabels();
-        }
+    // Add Task button
+    document.getElementById('outreach-add-task-btn').addEventListener('click', handleAddTask);
+    document.getElementById('outreach-task-type').addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') handleAddTask();
+    });
+
+    // Preset chips
+    document.querySelectorAll('.outreach-preset-chip').forEach((chip) => {
+      chip.addEventListener('click', () => {
+        document.getElementById('outreach-task-type').value = chip.dataset.label;
+        handleAddTask();
       });
     });
+
+    // Default due date → tomorrow
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    document.getElementById('outreach-task-due').value = tomorrow.toISOString().split('T')[0];
   }
 
-  const BTN_LABELS = {
-    invite_sent: '📩 Invite Sent',
-    connected: '🤝 Connected',
-    message_sent: '💬 Message Sent',
-    reply_received: '📨 Reply Received',
-    meeting_booked: '📅 Meeting Booked',
-  };
+  // ───────────────────────────
+  // Add Task
+  // ───────────────────────────
+  async function handleAddTask() {
+    if (!currentLead) return;
+    const typeInput = document.getElementById('outreach-task-type');
+    const dueInput = document.getElementById('outreach-task-due');
+    const addBtn = document.getElementById('outreach-add-task-btn');
 
-  function resetButtonLabels() {
-    document.querySelectorAll('.outreach-btn[data-event]').forEach((btn) => {
-      btn.textContent = BTN_LABELS[btn.dataset.event];
-    });
+    const taskType = typeInput.value.trim();
+    if (!taskType) {
+      typeInput.focus();
+      typeInput.classList.add('shake');
+      setTimeout(() => typeInput.classList.remove('shake'), 500);
+      return;
+    }
+
+    addBtn.disabled = true;
+    addBtn.textContent = '⏳';
+
+    try {
+      const body = { lead_id: currentLead.id, type: taskType };
+      if (dueInput.value) body.due_at = new Date(dueInput.value + 'T12:00:00').toISOString();
+
+      await api('POST', '/tasks', body);
+      typeInput.value = '';
+      showToast('Task added ✓');
+
+      await reloadTasks();
+    } catch (err) {
+      showToast('Error: ' + err.message, 'error');
+    } finally {
+      addBtn.disabled = false;
+      addBtn.textContent = '+';
+    }
   }
 
-  // ===========================
-  // Notification toast
-  // ===========================
-  function showNotification(text, type) {
-    const existing = document.getElementById('outreach-toast');
-    if (existing) existing.remove();
+  async function toggleTaskStatus(taskId, newStatus) {
+    try {
+      await api('PATCH', `/tasks/${taskId}`, { status: newStatus });
+      showToast(newStatus === 'done' ? 'Done ✓' : 'Reopened');
+      await reloadTasks();
+    } catch (err) {
+      showToast('Error: ' + err.message, 'error');
+    }
+  }
 
-    const toast = document.createElement('div');
+  async function reloadTasks() {
+    if (!currentLead) return;
+    try {
+      const r = await api('GET', `/leads/by-url?url=${encodeURIComponent(currentLead.linkedin_url)}`);
+      if (r.lead) {
+        currentTasks = r.tasks || [];
+        renderTasksList();
+      }
+    } catch (_) { /* silent */ }
+  }
+
+  // ───────────────────────────
+  // Toast notification
+  // ───────────────────────────
+  function showToast(text, type = 'success') {
+    let toast = document.getElementById('outreach-toast');
+    if (toast) toast.remove();
+
+    toast = document.createElement('div');
     toast.id = 'outreach-toast';
+    toast.className = `outreach-toast ${type === 'error' ? 'outreach-toast-error' : 'outreach-toast-success'}`;
     toast.textContent = text;
-    toast.style.cssText = `
-      position: fixed; bottom: 20px; right: 340px; z-index: 100000;
-      padding: 10px 18px; border-radius: 8px; font-size: 13px; font-weight: 600;
-      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.15);
-      ${type === 'error'
-        ? 'background: #ffebee; color: #c62828; border: 1px solid #ef9a9a;'
-        : 'background: #e8f5e9; color: #2e7d32; border: 1px solid #a5d6a7;'}
-    `;
     document.body.appendChild(toast);
-    setTimeout(() => toast.remove(), 3000);
+
+    requestAnimationFrame(() => toast.classList.add('show'));
+    setTimeout(() => {
+      toast.classList.remove('show');
+      setTimeout(() => toast.remove(), 300);
+    }, 2500);
   }
 
-  // ===========================
-  // Data loading (auto-create if new)
-  // ===========================
+  // ───────────────────────────
+  // Load lead data
+  // ───────────────────────────
   async function loadLeadData() {
     const profile = extractProfileData();
     if (!profile.linkedin_url) return;
 
     showSection('outreach-loading');
 
-    // Check if logged in
     const ready = await checkReady();
-    if (!ready) {
-      showSection('outreach-auth-required');
-      return;
-    }
+    if (!ready) { showSection('outreach-auth-required'); return; }
 
     try {
-      // 1. Try to find existing lead
       const result = await api('GET', `/leads/by-url?url=${encodeURIComponent(profile.linkedin_url)}`);
-
       if (result.lead) {
         currentLead = result.lead;
         currentTasks = result.tasks || [];
@@ -262,20 +323,17 @@
         return;
       }
 
-      // 2. Lead not found → AUTO-CREATE it
       if (!profile.name) {
-        showError('Could not extract profile name. Try refreshing the page.');
+        showError('Could not extract profile name. Refresh the page.');
         return;
       }
 
       const createResult = await api('POST', '/leads', profile);
       currentLead = createResult.lead;
       currentTasks = [];
-      showNotification('Lead auto-created ✓', 'success');
+      showToast('Lead auto-created ✓');
       renderLeadInfo();
-
     } catch (err) {
-      // If it's a duplicate error, try fetching again
       if (err.message.includes('already exists')) {
         try {
           const retry = await api('GET', `/leads/by-url?url=${encodeURIComponent(profile.linkedin_url)}`);
@@ -288,85 +346,125 @@
         } catch (_) { /* ignore */ }
       }
       console.warn('[Outreach] Load error:', err.message);
-      showError('Connection error. Check server.');
+      showError('Connection error. Is the server running?');
     }
   }
 
-  // ===========================
-  // Render lead info
-  // ===========================
+  // ───────────────────────────
+  // Render
+  // ───────────────────────────
   function renderLeadInfo() {
     showSection('outreach-lead-info');
 
-    const nameEl = document.getElementById('outreach-lead-name');
-    if (nameEl) nameEl.textContent = currentLead.name;
+    document.getElementById('outreach-lead-name').textContent = currentLead.name;
+    document.getElementById('outreach-lead-subtitle').textContent =
+      [currentLead.title, currentLead.company].filter(Boolean).join(' · ') || '';
 
-    document.getElementById('outreach-stage').textContent = currentLead.stage;
-    document.getElementById('outreach-stage').className =
-      `outreach-value outreach-badge stage-${currentLead.stage.toLowerCase()}`;
-
-    // Connection hint
-    const hasMessageBtn = [...document.querySelectorAll('button')].some(
-      b => b.textContent.trim().toLowerCase() === 'message'
-    );
-    const hint = document.getElementById('outreach-connection-hint');
-    hint.style.display = (hasMessageBtn && currentLead.stage === 'Invited') ? 'block' : 'none';
-
-    // Tasks
-    const tasksContainer = document.getElementById('outreach-tasks');
-    if (currentTasks.length === 0) {
-      tasksContainer.innerHTML = '<div class="outreach-no-tasks">No tasks</div>';
-    } else {
-      tasksContainer.innerHTML = currentTasks
-        .map((t) => {
-          const overdue = t.status === 'open' && new Date(t.due_at) < new Date();
-          return `
-            <div class="outreach-task ${overdue ? 'overdue' : ''} ${t.status}">
-              <span class="task-type">${t.type}</span>
-              <span class="task-due">${new Date(t.due_at).toLocaleDateString()}</span>
-              <span class="task-status">${t.status === 'done' ? '✅' : overdue ? '⚠️' : '🔵'}</span>
-            </div>`;
-        })
-        .join('');
-    }
-
-    // Highlight current stage button
-    highlightCurrentStage();
+    renderPipeline();
+    renderTasksList();
+    renderActionButtons();
   }
 
-  // Dim buttons for stages that are already passed
-  function highlightCurrentStage() {
-    const stageOrder = ['New', 'Invited', 'Connected', 'Messaged', 'Replied', 'Meeting'];
-    const eventForStage = {
-      'Invited': 'invite_sent',
-      'Connected': 'connected',
-      'Messaged': 'message_sent',
-      'Replied': 'reply_received',
-      'Meeting': 'meeting_booked',
-    };
+  function renderPipeline() {
+    const container = document.getElementById('outreach-pipeline');
+    const currentIdx = STAGES.indexOf(currentLead.stage);
 
-    const currentIdx = stageOrder.indexOf(currentLead.stage);
+    container.innerHTML = STAGES.map((stage, idx) => {
+      let cls = 'outreach-pipe-step';
+      if (idx < currentIdx) cls += ' passed';
+      if (idx === currentIdx) cls += ' active';
+      return `<div class="${cls}"><span class="pipe-dot"></span><span class="pipe-label">${stage}</span></div>`;
+    }).join('<div class="outreach-pipe-line"></div>');
+  }
 
-    document.querySelectorAll('.outreach-btn[data-event]').forEach((btn) => {
-      const eventType = btn.dataset.event;
-      // Find which stage this button leads to
-      const targetStage = Object.entries(eventForStage).find(([_, ev]) => ev === eventType);
-      if (targetStage) {
-        const targetIdx = stageOrder.indexOf(targetStage[0]);
-        if (targetIdx <= currentIdx) {
-          btn.style.opacity = '0.4';
-          btn.style.pointerEvents = 'none';
-        } else {
-          btn.style.opacity = '1';
-          btn.style.pointerEvents = 'auto';
-        }
-      }
+  function renderTasksList() {
+    const container = document.getElementById('outreach-tasks');
+    const countEl = document.getElementById('outreach-task-count');
+    const openCount = currentTasks.filter(t => t.status === 'open').length;
+    countEl.textContent = openCount;
+
+    if (currentTasks.length === 0) {
+      container.innerHTML = '<div class="outreach-empty">No tasks yet — add one below</div>';
+      return;
+    }
+
+    // Sort: open first (overdue at top), done at bottom
+    const sorted = [...currentTasks].sort((a, b) => {
+      if (a.status !== b.status) return a.status === 'open' ? -1 : 1;
+      const aOverdue = a.status === 'open' && new Date(a.due_at) < new Date();
+      const bOverdue = b.status === 'open' && new Date(b.due_at) < new Date();
+      if (aOverdue !== bOverdue) return aOverdue ? -1 : 1;
+      return new Date(a.due_at) - new Date(b.due_at);
+    });
+
+    container.innerHTML = sorted.map((t) => {
+      const overdue = t.status === 'open' && new Date(t.due_at) < new Date();
+      const isDone = t.status === 'done';
+      const icon = isDone ? '✅' : overdue ? '🔴' : '⬜';
+      const dueDateStr = new Date(t.due_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
+      return `
+        <div class="outreach-task ${overdue ? 'overdue' : ''} ${isDone ? 'done' : ''}">
+          <button class="task-toggle" data-task-id="${t.id}" data-new-status="${isDone ? 'open' : 'done'}">${icon}</button>
+          <span class="task-text ${isDone ? 'strikethrough' : ''}">${t.type}</span>
+          <span class="task-date ${overdue ? 'text-red' : ''}">${dueDateStr}</span>
+        </div>`;
+    }).join('');
+
+    container.querySelectorAll('.task-toggle').forEach((btn) => {
+      btn.addEventListener('click', () => toggleTaskStatus(btn.dataset.taskId, btn.dataset.newStatus));
     });
   }
 
-  // ===========================
-  // Section visibility helpers
-  // ===========================
+  function renderActionButtons() {
+    const container = document.getElementById('outreach-actions');
+    const currentIdx = STAGES.indexOf(currentLead.stage);
+
+    const BTN_CONFIG = [
+      { event: 'invite_sent', emoji: '📩', label: 'Invite Sent', cls: 'invite' },
+      { event: 'connected', emoji: '🤝', label: 'Connected', cls: 'connected' },
+      { event: 'message_sent', emoji: '💬', label: 'Message Sent', cls: 'message' },
+      { event: 'reply_received', emoji: '📨', label: 'Reply Received', cls: 'reply' },
+      { event: 'meeting_booked', emoji: '📅', label: 'Meeting Booked', cls: 'meeting' },
+    ];
+
+    container.innerHTML = BTN_CONFIG.map((cfg) => {
+      const targetStage = Object.entries(EVENT_FOR_STAGE).find(([_, ev]) => ev === cfg.event);
+      const targetIdx = targetStage ? STAGES.indexOf(targetStage[0]) : -1;
+      const isPassed = targetIdx <= currentIdx;
+      const isNext = targetIdx === currentIdx + 1;
+
+      return `
+        <button class="outreach-action-btn outreach-btn-${cfg.cls} ${isPassed ? 'passed' : ''} ${isNext ? 'next-action' : ''}"
+                data-event="${cfg.event}" ${isPassed ? 'disabled' : ''}>
+          ${cfg.emoji} ${cfg.label}
+          ${isPassed ? '<span class="check-mark">✓</span>' : ''}
+          ${isNext ? '<span class="next-badge">NEXT</span>' : ''}
+        </button>`;
+    }).join('');
+
+    container.querySelectorAll('.outreach-action-btn:not([disabled])').forEach((btn) => {
+      btn.addEventListener('click', async () => {
+        const eventType = btn.dataset.event;
+        btn.disabled = true;
+        const origHtml = btn.innerHTML;
+        btn.innerHTML = '<span class="outreach-spinner-small"></span> Recording...';
+        try {
+          await api('POST', '/events', { lead_id: currentLead.id, type: eventType });
+          showToast('Stage updated ✓');
+          await loadLeadData();
+        } catch (err) {
+          showToast('Error: ' + err.message, 'error');
+          btn.disabled = false;
+          btn.innerHTML = origHtml;
+        }
+      });
+    });
+  }
+
+  // ───────────────────────────
+  // Section visibility
+  // ───────────────────────────
   function showSection(id) {
     ['outreach-loading', 'outreach-lead-info', 'outreach-auth-required', 'outreach-error']
       .forEach(sId => {
@@ -378,39 +476,33 @@
   function showError(msg) {
     showSection('outreach-error');
     const el = document.getElementById('outreach-error');
-    if (el) el.textContent = '⚠️ ' + msg;
+    if (el) el.innerHTML = `<div style="font-size:28px;margin-bottom:8px;">⚠️</div><p>${msg}</p>`;
   }
 
-  // ===========================
-  // SPA navigation detection
-  // LinkedIn is a SPA — URL changes without full page reload.
-  // We watch for URL changes and re-load lead data.
-  // ===========================
+  // ───────────────────────────
+  // SPA navigation
+  // ───────────────────────────
   let lastUrl = window.location.href;
 
   function watchNavigation() {
-    const check = () => {
+    setInterval(() => {
       const currentUrl = window.location.href;
       if (currentUrl !== lastUrl) {
         lastUrl = currentUrl;
-        // Only act on profile pages
         if (currentUrl.includes('linkedin.com/in/')) {
           currentLead = null;
           currentTasks = [];
-          // Wait for new page content to load
           setTimeout(loadLeadData, 2000);
         }
       }
-    };
-    setInterval(check, 1000);
+    }, 1000);
   }
 
-  // ===========================
-  // Initialize
-  // ===========================
+  // ───────────────────────────
+  // Init
+  // ───────────────────────────
   function init() {
     createSidebar();
-    // Wait for LinkedIn to fully render profile content
     setTimeout(loadLeadData, 2000);
     watchNavigation();
   }

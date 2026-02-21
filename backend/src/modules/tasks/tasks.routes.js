@@ -8,7 +8,7 @@ const router = express.Router();
  * GET /api/tasks
  * Query: ?employee_id=&status=open|done&lead_id=&page=&limit=
  */
-router.get('/', authenticate, async (req, res) => {
+router.get('/', async (req, res) => {
   try {
     const { employee_id, status, lead_id, page = 1, limit = 50 } = req.query;
     const conditions = [];
@@ -50,6 +50,36 @@ router.get('/', authenticate, async (req, res) => {
 });
 
 /**
+ * POST /api/tasks
+ * Body: { lead_id, type, due_at? }
+ * Creates a custom task for a lead.
+ */
+router.post('/', authenticate, async (req, res) => {
+  try {
+    const { lead_id, type, due_at } = req.body;
+
+    if (!lead_id || !type) {
+      return res.status(400).json({ error: 'lead_id and type required' });
+    }
+
+    // Default due date: 24 hours from now
+    const dueDate = due_at ? new Date(due_at) : new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+    const { rows } = await db.query(
+      `INSERT INTO tasks (lead_id, employee_id, type, due_at)
+       VALUES ($1, $2, $3, $4)
+       RETURNING *`,
+      [lead_id, req.employee.id, type, dueDate]
+    );
+
+    res.status(201).json({ task: rows[0] });
+  } catch (err) {
+    console.error('Create task error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+/**
  * PATCH /api/tasks/:id
  * Body: { status: 'done' }
  */
@@ -81,7 +111,7 @@ router.patch('/:id', authenticate, async (req, res) => {
 /**
  * GET /api/tasks/overdue
  */
-router.get('/overdue', authenticate, async (req, res) => {
+router.get('/overdue', async (req, res) => {
   try {
     const { rows } = await db.query(
       `SELECT t.*, l.name AS lead_name, e.name AS employee_name

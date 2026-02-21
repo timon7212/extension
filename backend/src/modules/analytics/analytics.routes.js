@@ -8,7 +8,7 @@ const router = express.Router();
  * GET /api/analytics/overview
  * Returns high-level pipeline metrics.
  */
-router.get('/overview', authenticate, async (req, res) => {
+router.get('/overview', async (req, res) => {
   try {
     // Stage counts
     const stageResult = await db.query(
@@ -63,7 +63,7 @@ router.get('/overview', authenticate, async (req, res) => {
  * GET /api/analytics/employees
  * Returns per-employee funnel and activity.
  */
-router.get('/employees', authenticate, async (req, res) => {
+router.get('/employees', async (req, res) => {
   try {
     const { rows } = await db.query(`
       SELECT
@@ -97,7 +97,7 @@ router.get('/employees', authenticate, async (req, res) => {
  * GET /api/analytics/employee/:id
  * Returns detailed metrics for one employee.
  */
-router.get('/employee/:id', authenticate, async (req, res) => {
+router.get('/employee/:id', async (req, res) => {
   try {
     const { id } = req.params;
 

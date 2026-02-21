@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Outreach Tracker",
-  "version": "1.0.0",
-  "description": "Internal LinkedIn outreach tracking assistant",
+  "version": "1.1.0",
+  "description": "Internal LinkedIn outreach tracking assistant — profiles, tasks, connections import",
   "permissions": [
     "storage",
     "activeTab"
@@ -19,6 +19,16 @@
     {
       "matches": ["https://www.linkedin.com/in/*"],
       "js": ["content.js"],
+      "css": ["sidebar.css"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://www.linkedin.com/mynetwork/invite-connect/connections/*",
+        "https://www.linkedin.com/mynetwork/*",
+        "https://www.linkedin.com/search/results/people/*"
+      ],
+      "js": ["connections-scanner.js"],
       "css": ["sidebar.css"],
       "run_at": "document_idle"
     }
