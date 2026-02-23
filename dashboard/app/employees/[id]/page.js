@@ -3,119 +3,164 @@ import Link from 'next/link';
 
 export const dynamic = 'force-dynamic';
 
-async function getEmployeeDetail(id) {
-  try {
-    return await apiFetch(`/analytics/employee/${id}`);
-  } catch {
-    return null;
-  }
+async function getEmployee(id) {
+  try { return await apiFetch(`/analytics/employees/${id}`); } catch { return null; }
 }
 
 export default async function EmployeeDetailPage({ params }) {
   const { id } = await params;
-  const data = await getEmployeeDetail(id);
+  const data = await getEmployee(id);
 
   if (!data) {
     return (
-      <div className="flex items-center justify-center min-h-[60vh]">
-        <div className="text-center">
-          <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-red-50 flex items-center justify-center text-3xl">⚠️</div>
-          <p className="text-gray-500 text-lg font-medium">Could not load employee data</p>
+      <div className="flex items-center justify-center min-h-[70vh]">
+        <div className="text-center animate-scale-in">
+          <div className="w-20 h-20 mx-auto mb-5 rounded-3xl bg-gradient-to-br from-red-50 to-red-100 flex items-center justify-center">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#ef4444" strokeWidth="1.5"><circle cx="12" cy="12" r="10"/><line x1="15" y1="9" x2="9" y2="15"/><line x1="9" y1="9" x2="15" y2="15"/></svg>
+          </div>
+          <p className="text-ink-800 text-lg font-semibold">Employee not found</p>
+          <Link href="/employees" className="text-brand-500 text-sm mt-2 inline-block hover:underline">← Back to team</Link>
         </div>
       </div>
     );
   }
 
-  const stageOrder = ['New', 'Invited', 'Connected', 'Messaged', 'Replied', 'Meeting'];
-  const stages = {};
-  (data.funnel || []).forEach((f) => { stages[f.stage] = f.count; });
-  const totalLeads = stageOrder.reduce((s, st) => s + (stages[st] || 0), 0);
+  const { employee, leads, events, stages, tasks } = data;
+  const initials = employee.name.split(' ').map(w => w[0]).join('').slice(0, 2).toUpperCase();
 
-  const EVENT_ICONS = {
-    invite_sent: '📩', connected: '🤝', message_sent: '💬',
-    reply_received: '📨', meeting_booked: '📅',
+  const stageOrder = ['New', 'Invited', 'Connected', 'Messaged', 'Replied', 'Meeting'];
+  const totalStageLeads = stageOrder.reduce((s, st) => s + (stages[st] || 0), 0);
+
+  const STAGE_COLORS = {
+    New: '#94a3b8', Invited: '#6e62e5', Connected: '#22c55e',
+    Messaged: '#f59e0b', Replied: '#8b83ff', Meeting: '#ef4444',
   };
+
+  const EVENT_META = {
+    invite_sent: { icon: '📩', color: 'bg-blue-50 text-blue-600' },
+    connected: { icon: '🤝', color: 'bg-emerald-50 text-emerald-600' },
+    message_sent: { icon: '💬', color: 'bg-amber-50 text-amber-600' },
+    reply_received: { icon: '📨', color: 'bg-violet-50 text-violet-600' },
+    meeting_booked: { icon: '📅', color: 'bg-rose-50 text-rose-600' },
+  };
+
+  // Activity chart — last 14 days
+  const chart = [];
+  for (let i = 13; i >= 0; i--) {
+    const d = new Date(); d.setDate(d.getDate() - i);
+    const key = d.toISOString().slice(0, 10);
+    const dayEvents = events.filter(e => e.created_at?.startsWith(key));
+    chart.push({ label: d.toLocaleDateString('en-US', { weekday: 'narrow' }), day: d.getDate(), count: dayEvents.length });
+  }
+  const chartMax = Math.max(...chart.map(c => c.count), 1);
 
   return (
     <div>
-      <div className="mb-6">
-        <Link href="/employees" className="text-[13px] text-[#6c5ce7] hover:text-[#5a4bd1] font-medium">
+      {/* Breadcrumb */}
+      <div className="mb-6 animate-fade-in">
+        <Link href="/employees" className="text-xs font-medium text-ink-400 hover:text-brand-500 transition-colors">
           ← Back to Team
         </Link>
       </div>
 
-      {/* Header */}
-      <div className="flex items-center gap-4 mb-8">
-        <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-[#6c5ce7] to-[#a29bfe] text-white flex items-center justify-center font-bold text-2xl shadow-sm">
-          {data.employee?.name?.charAt(0)?.toUpperCase() || '?'}
-        </div>
-        <div>
-          <h1 className="text-[22px] font-bold text-gray-900">{data.employee?.name || 'Unknown'}</h1>
-          <p className="text-sm text-gray-400">{data.employee?.email} · {data.employee?.role}</p>
+      {/* Hero */}
+      <div className="glass-card p-6 mb-6 animate-slide-up relative overflow-hidden">
+        {/* Decorative glow */}
+        <div className="absolute -top-20 -right-20 w-48 h-48 rounded-full bg-gradient-to-br from-brand-400 to-brand-600 opacity-[0.05]" />
+
+        <div className="relative flex items-center gap-5">
+          <div className="w-16 h-16 rounded-3xl bg-gradient-to-br from-brand-500 to-brand-700 flex items-center justify-center text-white text-xl font-bold shadow-lg shadow-brand-500/20">
+            {initials}
+          </div>
+          <div>
+            <h1 className="text-2xl font-bold text-ink-900 tracking-tight">{employee.name}</h1>
+            <p className="text-[13px] text-ink-400">{employee.email}</p>
+          </div>
         </div>
       </div>
 
-      {/* KPIs */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-7">
-        <KpiCard label="Total Leads" value={totalLeads} />
-        <KpiCard label="Avg Reply Time" value={data.avgReplyHours ? `${data.avgReplyHours}h` : 'N/A'} />
-        <KpiCard label="Active Days (30d)" value={data.activityPerDay?.length || 0} />
-        <KpiCard
-          label="Overdue Tasks"
-          value={data.tasks?.filter(t => t.status === 'open' && new Date(t.due_at) < new Date()).length || 0}
-          alert
+      {/* KPI Row */}
+      <div className="grid grid-cols-4 gap-4 mb-6 stagger-children">
+        <KpiTile label="Leads" value={leads.length} icon="👤" />
+        <KpiTile label="Events" value={events.length} icon="⚡" />
+        <KpiTile label="Open Tasks" value={tasks?.filter(t => t.status === 'open').length || 0} icon="📋" />
+        <KpiTile
+          label="Reply Rate"
+          value={`${getReplyRate(stages)}%`}
+          icon="💬"
         />
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-7">
-        {/* Pipeline */}
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
-          <h2 className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-5">Pipeline</h2>
-          {totalLeads === 0 ? (
-            <p className="text-[13px] text-gray-400">No leads yet</p>
-          ) : (
-            <>
-              <div className="flex h-9 rounded-xl overflow-hidden mb-4 shadow-inner bg-gray-50">
-                {stageOrder.map((stage) => {
-                  const count = stages[stage] || 0;
-                  if (count === 0) return null;
-                  const pct = (count / totalLeads) * 100;
-                  const colors = {
-                    New: 'bg-gray-400', Invited: 'bg-[#6c5ce7]', Connected: 'bg-[#00b894]',
-                    Messaged: 'bg-[#fdcb6e]', Replied: 'bg-[#a29bfe]', Meeting: 'bg-[#e17055]',
-                  };
-                  return (
-                    <div key={stage} className={`${colors[stage]} flex items-center justify-center text-[11px] font-bold text-white`}
-                         style={{ width: `${pct}%` }} title={`${stage}: ${count}`}>
-                      {pct > 10 ? count : ''}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+        {/* Pipeline Funnel */}
+        <div className="lg:col-span-1 glass-card p-5 animate-slide-up" style={{ animationDelay: '0.1s' }}>
+          <h3 className="text-sm font-semibold text-ink-800 mb-4">Pipeline</h3>
+          <div className="space-y-2.5">
+            {stageOrder.map(stage => {
+              const count = stages[stage] || 0;
+              const pct = totalStageLeads > 0 ? (count / totalStageLeads) * 100 : 0;
+              return (
+                <div key={stage}>
+                  <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center gap-2">
+                      <div className="w-1.5 h-1.5 rounded-full" style={{ background: STAGE_COLORS[stage] }} />
+                      <span className="text-[12px] font-medium text-ink-600">{stage}</span>
                     </div>
-                  );
-                })}
-              </div>
-              <div className="flex flex-wrap gap-x-5 gap-y-1 text-[12px] text-gray-500">
-                {stageOrder.map((s) => (
-                  <span key={s}>{s}: <strong className="text-gray-700">{stages[s] || 0}</strong></span>
-                ))}
-              </div>
-            </>
-          )}
+                    <span className="text-[12px] font-bold text-ink-700">{count}</span>
+                  </div>
+                  <div className="h-1.5 bg-surface-100 rounded-full overflow-hidden">
+                    <div className="h-full rounded-full transition-all duration-700"
+                         style={{ width: `${Math.max(pct, 2)}%`, background: STAGE_COLORS[stage] }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
 
         {/* Activity Chart */}
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
-          <h2 className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-5">Activity (30 days)</h2>
-          {(!data.activityPerDay || data.activityPerDay.length === 0) ? (
-            <p className="text-[13px] text-gray-400">No activity</p>
+        <div className="lg:col-span-2 glass-card p-5 animate-slide-up" style={{ animationDelay: '0.15s' }}>
+          <h3 className="text-sm font-semibold text-ink-800 mb-4">Activity · 14 days</h3>
+          <div className="flex items-end gap-1 h-[120px]">
+            {chart.map((bar, i) => (
+              <div key={i} className="flex-1 flex flex-col items-center justify-end h-full group">
+                <div className="relative flex-1 w-full flex items-end justify-center">
+                  <div className="w-full max-w-[24px] rounded-t-lg transition-all duration-300 group-hover:opacity-80"
+                       style={{
+                         height: `${Math.max((bar.count / chartMax) * 100, 4)}%`,
+                         background: bar.count > 0 ? 'linear-gradient(to top, #6e62e5, #8b83ff)' : '#e8ecf1',
+                       }} />
+                  {bar.count > 0 && (
+                    <span className="absolute -top-5 left-1/2 -translate-x-1/2 text-[9px] font-bold text-brand-600 opacity-0 group-hover:opacity-100 transition-opacity">
+                      {bar.count}
+                    </span>
+                  )}
+                </div>
+                <span className="text-[9px] text-ink-300 mt-1.5 font-medium">{bar.day}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        {/* Recent Events */}
+        <div className="glass-card p-5 animate-slide-up" style={{ animationDelay: '0.2s' }}>
+          <h3 className="text-sm font-semibold text-ink-800 mb-4">Recent Events</h3>
+          {events.length === 0 ? (
+            <p className="text-sm text-ink-300 text-center py-8">No events yet</p>
           ) : (
-            <div className="flex items-end gap-0.5 h-24">
-              {data.activityPerDay.map((day) => {
-                const maxCount = Math.max(...data.activityPerDay.map((d) => d.count));
-                const height = maxCount > 0 ? (day.count / maxCount) * 100 : 0;
+            <div className="space-y-1 max-h-[400px] overflow-y-auto pr-1">
+              {events.slice(0, 25).map((ev, i) => {
+                const meta = EVENT_META[ev.type] || { icon: '📌', color: 'bg-surface-100 text-ink-600' };
                 return (
-                  <div key={day.date} className="flex-1 bg-[#6c5ce7] rounded-t hover:bg-[#5a4bd1] transition-colors relative group"
-                       style={{ height: `${Math.max(height, 4)}%` }} title={`${day.date}: ${day.count}`}>
-                    <div className="absolute -top-6 left-1/2 -translate-x-1/2 bg-gray-800 text-white text-[10px] px-1.5 py-0.5 rounded-md opacity-0 group-hover:opacity-100 transition-opacity whitespace-nowrap">
-                      {day.count}
+                  <div key={ev.id || i} className="flex items-center gap-3 p-2.5 -mx-1 rounded-xl hover:bg-surface-50 transition-colors group">
+                    <div className="w-8 h-8 rounded-xl bg-surface-100 flex items-center justify-center text-sm flex-shrink-0 group-hover:scale-110 transition-transform">
+                      {meta.icon}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-[13px] font-medium text-ink-700 truncate">{ev.lead_name || 'Unknown'}</p>
+                      <p className="text-[11px] text-ink-400">{ev.type?.replace(/_/g, ' ')} · {getTimeAgo(ev.created_at)}</p>
                     </div>
                   </div>
                 );
@@ -123,58 +168,32 @@ export default async function EmployeeDetailPage({ params }) {
             </div>
           )}
         </div>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Recent Events */}
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
-          <h2 className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-5">Recent Events</h2>
-          {(!data.recentEvents || data.recentEvents.length === 0) ? (
-            <p className="text-[13px] text-gray-400">No events</p>
-          ) : (
-            <div className="space-y-3 max-h-80 overflow-y-auto pr-1">
-              {data.recentEvents.map((ev) => (
-                <div key={ev.id} className="flex items-start gap-3 text-[13px]">
-                  <div className="w-8 h-8 rounded-lg bg-gray-50 flex items-center justify-center text-sm flex-shrink-0">
-                    {EVENT_ICONS[ev.type] || '📌'}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <p className="font-medium text-gray-800 truncate">{ev.lead_name || 'Unknown'}</p>
-                    <p className="text-[11px] text-gray-400">
-                      {ev.type.replace(/_/g, ' ')} · {new Date(ev.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                    </p>
-                  </div>
-                  {ev.linkedin_url && (
-                    <a href={ev.linkedin_url} target="_blank" rel="noopener noreferrer"
-                       className="text-[11px] text-[#6c5ce7] hover:underline flex-shrink-0">↗</a>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
 
         {/* Tasks */}
-        <div className="bg-white rounded-2xl border border-gray-100 shadow-sm p-6">
-          <h2 className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-5">Tasks</h2>
-          {(!data.tasks || data.tasks.length === 0) ? (
-            <p className="text-[13px] text-gray-400">No tasks</p>
+        <div className="glass-card p-5 animate-slide-up" style={{ animationDelay: '0.25s' }}>
+          <h3 className="text-sm font-semibold text-ink-800 mb-4">Tasks</h3>
+          {(!tasks || tasks.length === 0) ? (
+            <p className="text-sm text-ink-300 text-center py-8">No tasks</p>
           ) : (
-            <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
-              {data.tasks.map((task) => {
+            <div className="space-y-1 max-h-[400px] overflow-y-auto pr-1">
+              {tasks.slice(0, 25).map((task, i) => {
                 const overdue = task.status === 'open' && new Date(task.due_at) < new Date();
                 return (
-                  <div key={task.id} className={`flex items-center gap-3 p-3 rounded-xl text-[13px] ${overdue ? 'bg-red-50/60' : 'bg-gray-50/60'}`}>
-                    <div className="w-7 h-7 rounded-lg bg-white flex items-center justify-center text-sm shadow-sm">
-                      {task.status === 'done' ? '✅' : overdue ? '🔴' : '⬜'}
+                  <div key={task.id || i} className={`flex items-center gap-3 p-2.5 -mx-1 rounded-xl transition-colors ${overdue ? 'bg-red-50/40' : 'hover:bg-surface-50'}`}>
+                    <div className={`w-7 h-7 rounded-lg flex items-center justify-center text-xs font-bold flex-shrink-0 ${
+                      task.status === 'done' ? 'bg-emerald-100 text-emerald-600' :
+                      overdue ? 'bg-red-100 text-red-500' : 'bg-surface-100 text-ink-300'
+                    }`}>
+                      {task.status === 'done' ? '✓' : overdue ? '!' : '○'}
                     </div>
                     <div className="flex-1 min-w-0">
-                      <span className={`font-medium ${task.status === 'done' ? 'text-gray-400 line-through' : 'text-gray-800'}`}>{task.type}</span>
-                      <span className="text-[11px] text-gray-400 ml-2">— {task.lead_name}</span>
+                      <p className={`text-[13px] font-medium truncate ${task.status === 'done' ? 'text-ink-300 line-through' : 'text-ink-700'}`}>
+                        {task.type} — {task.lead_name || 'Unknown'}
+                      </p>
+                      <p className={`text-[11px] ${overdue ? 'text-red-500 font-semibold' : 'text-ink-400'}`}>
+                        {formatDue(task.due_at)}
+                      </p>
                     </div>
-                    <span className={`text-[11px] font-semibold flex-shrink-0 ${overdue ? 'text-[#d63031]' : 'text-gray-400'}`}>
-                      {new Date(task.due_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
-                    </span>
                   </div>
                 );
               })}
@@ -186,11 +205,41 @@ export default async function EmployeeDetailPage({ params }) {
   );
 }
 
-function KpiCard({ label, value, alert }) {
+function KpiTile({ label, value, icon }) {
   return (
-    <div className={`rounded-2xl border p-5 ${alert ? 'bg-red-50/60 border-red-200' : 'bg-white border-gray-100 shadow-sm'}`}>
-      <p className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider mb-2">{label}</p>
-      <p className={`text-2xl font-bold ${alert ? 'text-[#d63031]' : 'text-gray-900'}`}>{value}</p>
+    <div className="glass-card glass-card-hover p-4 text-center">
+      <span className="text-lg">{icon}</span>
+      <p className="text-[22px] font-bold text-ink-900 mt-1">{value}</p>
+      <p className="text-[10px] font-semibold text-ink-400 uppercase tracking-wider mt-0.5">{label}</p>
     </div>
   );
+}
+
+function getReplyRate(stages) {
+  const messaged = (stages.Messaged || 0) + (stages.Replied || 0) + (stages.Meeting || 0);
+  const replied = (stages.Replied || 0) + (stages.Meeting || 0);
+  return messaged > 0 ? Math.round((replied / messaged) * 100) : 0;
+}
+
+function getTimeAgo(dateStr) {
+  if (!dateStr) return '';
+  const seconds = Math.floor((Date.now() - new Date(dateStr).getTime()) / 1000);
+  if (seconds < 60) return 'just now';
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  const days = Math.floor(seconds / 86400);
+  if (days === 1) return 'yesterday';
+  if (days < 7) return `${days}d ago`;
+  return new Date(dateStr).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+function formatDue(dateStr) {
+  const d = new Date(dateStr); const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const dateStart = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const diff = Math.round((dateStart - today) / 86400000);
+  if (diff === 0) return 'Due today';
+  if (diff === 1) return 'Due tomorrow';
+  if (diff < 0) return `${Math.abs(diff)}d overdue`;
+  return `Due in ${diff}d`;
 }

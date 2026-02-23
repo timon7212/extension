@@ -5,7 +5,6 @@ import { useState, useEffect, useCallback } from 'react';
 const API_BASE = typeof window !== 'undefined'
   ? (process.env.NEXT_PUBLIC_API_URL || '/api')
   : 'http://localhost:3001/api';
-
 const API_KEY = 'outreach-internal-key';
 
 export default function TasksPage() {
@@ -17,16 +16,13 @@ export default function TasksPage() {
   const [employeeFilter, setEmployeeFilter] = useState('');
 
   useEffect(() => {
-    async function loadEmployees() {
+    (async () => {
       try {
-        const res = await fetch(`${API_BASE}/analytics/employees`, {
-          headers: { 'X-API-Key': API_KEY },
-        });
+        const res = await fetch(`${API_BASE}/analytics/employees`, { headers: { 'X-API-Key': API_KEY } });
         const data = await res.json();
         setEmployees(data.employees || []);
-      } catch { /* ignore */ }
-    }
-    loadEmployees();
+      } catch {}
+    })();
   }, []);
 
   const fetchTasks = useCallback(async () => {
@@ -35,18 +31,12 @@ export default function TasksPage() {
       const params = new URLSearchParams({ limit: 100 });
       if (statusFilter) params.set('status', statusFilter);
       if (employeeFilter) params.set('employee_id', employeeFilter);
-
-      const res = await fetch(`${API_BASE}/tasks?${params}`, {
-        headers: { 'X-API-Key': API_KEY },
-      });
+      const res = await fetch(`${API_BASE}/tasks?${params}`, { headers: { 'X-API-Key': API_KEY } });
       const data = await res.json();
       setTasks(data.tasks || []);
       setTotal(data.total || 0);
-    } catch {
-      console.error('Failed to fetch tasks');
-    } finally {
-      setLoading(false);
-    }
+    } catch { console.error('Failed to fetch tasks'); }
+    finally { setLoading(false); }
   }, [statusFilter, employeeFilter]);
 
   useEffect(() => { fetchTasks(); }, [fetchTasks]);
@@ -56,43 +46,46 @@ export default function TasksPage() {
   return (
     <div>
       {/* Header */}
-      <div className="flex items-center justify-between mb-8">
-        <div>
-          <h1 className="text-[22px] font-bold text-gray-900">Tasks</h1>
-          <p className="text-sm text-gray-400 mt-0.5">
-            {total} tasks
-            {overdueCount > 0 && <span className="text-[#d63031] font-semibold ml-1">· {overdueCount} overdue</span>}
-          </p>
+      <div className="mb-8 animate-slide-up">
+        <p className="text-xs font-semibold text-ink-400 uppercase tracking-widest mb-1">Workflow</p>
+        <div className="flex items-end justify-between">
+          <h1 className="text-[28px] font-bold text-ink-900 tracking-tight">Tasks</h1>
+          <div className="flex items-center gap-3">
+            <span className="text-sm text-ink-400 font-medium">{total} tasks</span>
+            {overdueCount > 0 && (
+              <span className="flex items-center gap-1.5 text-xs font-semibold text-red-500 bg-red-50 px-2.5 py-1 rounded-lg">
+                <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse-soft" />
+                {overdueCount} overdue
+              </span>
+            )}
+          </div>
         </div>
       </div>
 
       {/* Filters */}
-      <div className="flex flex-wrap items-center gap-3 mb-5">
+      <div className="flex flex-wrap items-center gap-3 mb-6 animate-slide-up" style={{ animationDelay: '0.05s' }}>
         <div className="flex gap-1">
           {[
-            { val: 'open', label: '🔵 Open' },
-            { val: 'done', label: '✅ Done' },
-            { val: '', label: 'All' },
-          ].map(({ val, label }) => (
-            <button
-              key={val}
-              onClick={() => setStatusFilter(val)}
-              className={`px-3.5 py-1.5 rounded-xl text-[12px] font-semibold transition-all ${
-                statusFilter === val
-                  ? 'bg-[#6c5ce7] text-white shadow-sm'
-                  : 'bg-white border border-gray-200 text-gray-500 hover:border-[#6c5ce7]/30 hover:text-[#6c5ce7]'
-              }`}
-            >
+            { val: 'open', label: 'Open', icon: '○' },
+            { val: 'done', label: 'Done', icon: '✓' },
+            { val: '', label: 'All', icon: null },
+          ].map(({ val, label, icon }) => (
+            <button key={val} onClick={() => setStatusFilter(val)}
+                    className={`pill-btn flex items-center gap-1.5 ${
+                      statusFilter === val
+                        ? 'bg-ink-900 text-white shadow-md'
+                        : 'bg-white border border-surface-200 text-ink-500 hover:border-brand-300 shadow-sm'
+                    }`}>
+              {icon && <span className="text-[10px]">{icon}</span>}
               {label}
             </button>
           ))}
         </div>
 
-        <select
-          value={employeeFilter}
-          onChange={(e) => setEmployeeFilter(e.target.value)}
-          className="ml-auto px-4 py-2 border border-gray-200 rounded-xl text-[13px] bg-white focus:outline-none focus:ring-2 focus:ring-[#6c5ce7]/20 focus:border-[#6c5ce7] transition-all shadow-sm"
-        >
+        <select value={employeeFilter} onChange={(e) => setEmployeeFilter(e.target.value)}
+                className="ml-auto px-4 py-2.5 border border-surface-200 rounded-xl text-[13px] bg-white
+                           focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-400
+                           shadow-sm transition-all text-ink-600">
           <option value="">All team members</option>
           {employees.map((emp) => (
             <option key={emp.id} value={emp.id}>{emp.name}</option>
@@ -101,74 +94,72 @@ export default function TasksPage() {
       </div>
 
       {/* Table */}
-      <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
+      <div className="glass-card overflow-hidden animate-slide-up" style={{ animationDelay: '0.1s' }}>
         {loading ? (
-          <div className="p-16 text-center text-gray-400">
-            <div className="inline-block w-7 h-7 border-2 border-gray-200 border-t-[#6c5ce7] rounded-full animate-spin mb-3"></div>
-            <p className="text-[13px]">Loading...</p>
+          <div className="p-20 text-center">
+            <div className="w-8 h-8 mx-auto border-2 border-surface-200 border-t-brand-500 rounded-full animate-spin mb-3" />
+            <p className="text-sm text-ink-400">Loading tasks...</p>
           </div>
         ) : tasks.length === 0 ? (
-          <div className="p-16 text-center text-gray-400">
-            <div className="w-14 h-14 mx-auto mb-3 rounded-2xl bg-gray-50 flex items-center justify-center text-2xl">🎉</div>
-            <p className="text-[13px] font-medium">No tasks found</p>
+          <div className="p-20 text-center">
+            <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-surface-100 flex items-center justify-center">
+              <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="1.5"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+            </div>
+            <p className="text-sm font-medium text-ink-500">All clear!</p>
+            <p className="text-xs text-ink-300 mt-1">No tasks match your filters</p>
           </div>
         ) : (
           <table className="w-full text-[13px]">
             <thead>
-              <tr className="bg-gray-50/60 text-left text-[11px] font-semibold text-gray-400 uppercase tracking-wider border-b border-gray-100">
-                <th className="px-5 py-3.5 w-10"></th>
+              <tr className="text-left text-[10px] font-bold text-ink-300 uppercase tracking-wider border-b border-surface-100">
+                <th className="px-5 py-3.5 w-10" />
                 <th className="px-5 py-3.5">Task</th>
                 <th className="px-5 py-3.5">Lead</th>
-                <th className="px-5 py-3.5">Assigned To</th>
+                <th className="px-5 py-3.5">Assigned</th>
                 <th className="px-5 py-3.5">Due</th>
-                <th className="px-5 py-3.5 w-10"></th>
+                <th className="px-5 py-3.5 w-10" />
               </tr>
             </thead>
-            <tbody className="divide-y divide-gray-50">
-              {tasks.map((task) => {
+            <tbody>
+              {tasks.map((task, i) => {
                 const overdue = task.status === 'open' && new Date(task.due_at) < new Date();
                 const isToday = task.status === 'open' && isDateToday(task.due_at);
                 return (
-                  <tr key={task.id} className={`transition-colors group ${overdue ? 'bg-red-50/40' : 'hover:bg-[#f7f8fc]'}`}>
-                    <td className="px-5 py-3.5">
-                      <div className={`w-7 h-7 rounded-lg flex items-center justify-center text-sm ${
-                        task.status === 'done' ? 'bg-emerald-50' :
-                        overdue ? 'bg-red-50' :
-                        isToday ? 'bg-orange-50' :
-                        'bg-gray-50'
-                      }`}>
-                        {task.status === 'done' ? '✅' : overdue ? '🔴' : isToday ? '🟠' : '⬜'}
+                  <tr key={task.id}
+                      className={`border-b border-surface-50 transition-colors group table-row-enter ${overdue ? 'bg-red-50/40' : 'hover:bg-brand-50/30'}`}
+                      style={{ animationDelay: `${i * 0.02}s` }}>
+                    <td className="px-5 py-4">
+                      <div className={`w-7 h-7 rounded-lg flex items-center justify-center text-xs font-bold
+                        ${task.status === 'done' ? 'bg-emerald-100 text-emerald-600' :
+                          overdue ? 'bg-red-100 text-red-500' :
+                          isToday ? 'bg-amber-100 text-amber-600' :
+                          'bg-surface-100 text-ink-300'}`}>
+                        {task.status === 'done' ? '✓' : overdue ? '!' : isToday ? '•' : '○'}
                       </div>
                     </td>
-                    <td className="px-5 py-3.5">
-                      <span className={`font-medium ${task.status === 'done' ? 'text-gray-400 line-through' : 'text-gray-800'}`}>
+                    <td className="px-5 py-4">
+                      <span className={`font-medium ${task.status === 'done' ? 'text-ink-300 line-through' : 'text-ink-800'}`}>
                         {task.type}
                       </span>
                     </td>
-                    <td className="px-5 py-3.5">
-                      <div className="font-medium text-gray-700">{task.lead_name || '—'}</div>
-                      {task.lead_company && <div className="text-[11px] text-gray-400">{task.lead_company}</div>}
+                    <td className="px-5 py-4">
+                      <p className="font-medium text-ink-700">{task.lead_name || '—'}</p>
+                      {task.lead_company && <p className="text-[11px] text-ink-400">{task.lead_company}</p>}
                     </td>
-                    <td className="px-5 py-3.5 text-gray-500">{task.employee_name || '—'}</td>
-                    <td className="px-5 py-3.5">
-                      <span className={`text-[12px] font-semibold px-2.5 py-1 rounded-lg ${
-                        overdue ? 'bg-red-100 text-red-700' :
-                        isToday ? 'bg-orange-100 text-orange-700' :
-                        task.status === 'done' ? 'text-gray-400' : 'text-gray-500'
+                    <td className="px-5 py-4 text-ink-500 text-[12px]">{task.employee_name || '—'}</td>
+                    <td className="px-5 py-4">
+                      <span className={`text-[11px] font-semibold px-2.5 py-1 rounded-lg ${
+                        overdue ? 'bg-red-100 text-red-600' :
+                        isToday ? 'bg-amber-100 text-amber-700' :
+                        task.status === 'done' ? 'text-ink-300' : 'text-ink-500 bg-surface-100'
                       }`}>
                         {formatDue(task.due_at)}
                       </span>
                     </td>
-                    <td className="px-5 py-3.5">
+                    <td className="px-5 py-4">
                       {task.linkedin_url && (
-                        <a
-                          href={task.linkedin_url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="opacity-0 group-hover:opacity-100 text-[#6c5ce7] hover:text-[#5a4bd1] text-[11px] font-semibold transition-opacity"
-                        >
-                          Open ↗
-                        </a>
+                        <a href={task.linkedin_url} target="_blank" rel="noopener noreferrer"
+                           className="opacity-0 group-hover:opacity-100 text-brand-500 text-[11px] font-semibold transition-all">↗</a>
                       )}
                     </td>
                   </tr>
@@ -183,18 +174,15 @@ export default function TasksPage() {
 }
 
 function isDateToday(dateStr) {
-  const d = new Date(dateStr);
-  const now = new Date();
-  return d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate();
+  const d = new Date(dateStr); const n = new Date();
+  return d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate();
 }
 
 function formatDue(dateStr) {
-  const d = new Date(dateStr);
-  const now = new Date();
+  const d = new Date(dateStr); const now = new Date();
   const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
   const dateStart = new Date(d.getFullYear(), d.getMonth(), d.getDate());
   const diff = Math.round((dateStart - today) / 86400000);
-
   if (diff === 0) return 'Today';
   if (diff === 1) return 'Tomorrow';
   if (diff === -1) return 'Yesterday';

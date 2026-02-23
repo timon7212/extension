@@ -1,47 +1,82 @@
 import './globals.css';
 
 export const metadata = {
-  title: 'Outreach Dashboard',
-  description: 'Internal outreach management dashboard',
+  title: 'Outreach',
+  description: 'Internal outreach management platform',
 };
 
 export default function RootLayout({ children }) {
   return (
     <html lang="en">
-      <body>
-        <div className="min-h-screen flex">
-          {/* Sidebar — Apollo-inspired clean dark */}
-          <aside className="w-[220px] bg-[#1e1f2b] text-gray-400 flex flex-col flex-shrink-0 border-r border-[#2a2b3d]">
+      <body className="overflow-hidden">
+        <div className="h-screen flex">
+          {/* ── Sidebar ── Dark macOS-style */}
+          <aside className="w-[240px] flex-shrink-0 bg-[#0f0f14] flex flex-col relative overflow-hidden">
+            {/* Subtle gradient overlay */}
+            <div className="absolute inset-0 bg-gradient-to-b from-[#1a1a24] via-transparent to-transparent opacity-50 pointer-events-none" />
+
             {/* Logo */}
-            <div className="px-5 py-5">
-              <div className="flex items-center gap-2.5">
-                <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-[#6c5ce7] to-[#a29bfe] flex items-center justify-center text-white text-sm font-bold shadow-md">
-                  O
+            <div className="relative z-10 px-6 pt-7 pb-5">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-[12px] bg-gradient-to-br from-[#6e62e5] to-[#8b83ff] flex items-center justify-center shadow-lg shadow-[#6e62e5]/20">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+                  </svg>
                 </div>
                 <div>
-                  <h1 className="text-[15px] font-bold text-white leading-none">Outreach</h1>
-                  <p className="text-[10px] text-gray-500 mt-0.5">Management Dashboard</p>
+                  <h1 className="text-[15px] font-bold text-white tracking-tight leading-none">Outreach</h1>
+                  <p className="text-[10px] text-white/30 mt-0.5 font-medium">Management Platform</p>
                 </div>
               </div>
             </div>
 
-            {/* Nav */}
-            <nav className="flex-1 px-3 py-2 space-y-0.5">
-              <NavItem href="/" icon={<OverviewIcon />} label="Overview" />
-              <NavItem href="/leads" icon={<LeadsIcon />} label="Leads" />
-              <NavItem href="/tasks" icon={<TasksIcon />} label="Tasks" />
-              <NavItem href="/employees" icon={<TeamIcon />} label="Team" />
+            {/* Navigation */}
+            <nav className="relative z-10 flex-1 px-3 space-y-1">
+              <p className="text-[10px] font-semibold text-white/20 uppercase tracking-widest px-3 mb-2">Menu</p>
+              <NavItem href="/" label="Overview">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="3" y="3" width="7" height="7" rx="2" />
+                  <rect x="14" y="3" width="7" height="7" rx="2" />
+                  <rect x="3" y="14" width="7" height="7" rx="2" />
+                  <rect x="14" y="14" width="7" height="7" rx="2" />
+                </svg>
+              </NavItem>
+              <NavItem href="/leads" label="Leads">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                  <circle cx="9" cy="7" r="4" />
+                  <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+                  <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+                </svg>
+              </NavItem>
+              <NavItem href="/tasks" label="Tasks">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M9 11l3 3L22 4" />
+                  <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+                </svg>
+              </NavItem>
+              <NavItem href="/employees" label="Team">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 4.354a4 4 0 1 1 0 7.292" />
+                  <path d="M15 21H3v-1a6 6 0 0 1 12 0v1z" />
+                  <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+                  <path d="M21 21v-1a4 4 0 0 0-3-3.85" />
+                </svg>
+              </NavItem>
             </nav>
 
             {/* Footer */}
-            <div className="px-5 py-3 border-t border-[#2a2b3d] text-[10px] text-gray-600">
-              v1.3.0 — Internal Tool
+            <div className="relative z-10 px-6 py-4 border-t border-white/[0.04]">
+              <div className="flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse-soft" />
+                <span className="text-[10px] text-white/25 font-medium">System online</span>
+              </div>
             </div>
           </aside>
 
-          {/* Main content */}
-          <main className="flex-1 overflow-auto bg-[#f7f8fc]">
-            <div className="max-w-7xl mx-auto px-8 py-7">
+          {/* ── Main Content ── */}
+          <main className="flex-1 overflow-auto bg-[#f5f6fa]">
+            <div className="max-w-[1200px] mx-auto px-8 py-8 animate-fade-in">
               {children}
             </div>
           </main>
@@ -51,50 +86,18 @@ export default function RootLayout({ children }) {
   );
 }
 
-function NavItem({ href, icon, label }) {
+function NavItem({ href, label, children }) {
   return (
     <a
       href={href}
       className="flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-medium
-                 hover:bg-white/[0.06] hover:text-white transition-all group"
+                 text-white/50 hover:text-white/90 hover:bg-white/[0.06]
+                 transition-all duration-200 group"
     >
-      <span className="w-5 h-5 text-gray-500 group-hover:text-[#a29bfe] transition-colors">
-        {icon}
+      <span className="text-white/30 group-hover:text-[#8b83ff] transition-colors duration-200">
+        {children}
       </span>
       {label}
     </a>
-  );
-}
-
-/* SVG Icons — minimal, Apollo-style */
-function OverviewIcon() {
-  return (
-    <svg viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
-      <path d="M10 2a8 8 0 100 16 8 8 0 000-16zM5.5 9h2a.5.5 0 01.5.5v4a.5.5 0 01-.5.5h-2a.5.5 0 01-.5-.5v-4a.5.5 0 01.5-.5zm3.5-3h2a.5.5 0 01.5.5v7a.5.5 0 01-.5.5H9a.5.5 0 01-.5-.5v-7A.5.5 0 019 6zm3.5 1.5h2a.5.5 0 01.5.5v5.5a.5.5 0 01-.5.5h-2a.5.5 0 01-.5-.5V8a.5.5 0 01.5-.5z" />
-    </svg>
-  );
-}
-
-function LeadsIcon() {
-  return (
-    <svg viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
-      <path d="M10 9a3 3 0 100-6 3 3 0 000 6zm-7 9a7 7 0 1114 0H3z" />
-    </svg>
-  );
-}
-
-function TasksIcon() {
-  return (
-    <svg viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
-      <path fillRule="evenodd" d="M6 2a2 2 0 00-2 2v12a2 2 0 002 2h8a2 2 0 002-2V7.414A2 2 0 0015.414 6L12 2.586A2 2 0 0010.586 2H6zm5 6a1 1 0 10-2 0v3.586l-1.293-1.293a1 1 0 10-1.414 1.414l3 3a1 1 0 001.414 0l3-3a1 1 0 00-1.414-1.414L11 11.586V8z" clipRule="evenodd" />
-    </svg>
-  );
-}
-
-function TeamIcon() {
-  return (
-    <svg viewBox="0 0 20 20" fill="currentColor" className="w-5 h-5">
-      <path d="M9 6a3 3 0 11-6 0 3 3 0 016 0zM17 6a3 3 0 11-6 0 3 3 0 016 0zM12.93 17c.046-.327.07-.66.07-1a6.97 6.97 0 00-1.5-4.33A5 5 0 0119 16v1h-6.07zM6 11a5 5 0 015 5v1H1v-1a5 5 0 015-5z" />
-    </svg>
   );
 }
